@@ -99,3 +99,18 @@ go vet and gofmt pass with no issues.
 - All 14 tests passing
 - Linting passes (go vet, gofmt)
 - Marked task as complete in PRD.md
+
+## 2026-01-16: Mark POST /tasks endpoint as complete
+
+### Completed
+- Verified POST /tasks endpoint implementation in main.go (createTask method, lines 142-161)
+- Endpoint accepts JSON body with title and description fields
+- Returns 201 Created with the created task (including generated ID and timestamp)
+- Returns 400 Bad Request for invalid JSON or missing title
+- Confirmed existing tests cover this endpoint:
+  - TestServerCreateTask: valid task creation
+  - TestServerCreateTaskInvalidJSON: handles malformed JSON
+  - TestServerCreateTaskMissingTitle: validates required title field
+- All 14 tests passing
+- Linting passes (go vet, gofmt)
+- Marked task as complete in PRD.md
