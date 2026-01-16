@@ -30,7 +30,7 @@ type Task struct {
 - [x] Set up Go project with go.mod and create main.go with a basic HTTP server listening on port 8080
 - [x] Create GET /tasks endpoint that returns a list of all tasks as JSON
 - [x] Create POST /tasks endpoint that accepts JSON body to create a new task and returns the created task
-- [ ] Create GET /tasks/{id} endpoint that returns a single task by ID or 404 if not found
+- [x] Create GET /tasks/{id} endpoint that returns a single task by ID or 404 if not found
 - [ ] Create DELETE /tasks/{id} endpoint that deletes a task by ID and returns 204 No Content on success
 
 ## Technical Requirements

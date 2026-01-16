@@ -114,3 +114,17 @@ go vet and gofmt pass with no issues.
 - All 14 tests passing
 - Linting passes (go vet, gofmt)
 - Marked task as complete in PRD.md
+
+## 2026-01-16: Mark GET /tasks/{id} endpoint as complete
+
+### Completed
+- Verified GET /tasks/{id} endpoint implementation in main.go (getTask method, lines 163-171)
+- Endpoint extracts task ID from URL path and returns single task as JSON
+- Returns 200 OK with task data when found
+- Returns 404 Not Found with error JSON when task doesn't exist
+- Confirmed existing tests cover this endpoint:
+  - TestServerGetTask: retrieves existing task successfully
+  - TestServerGetTaskNotFound: returns 404 for non-existent task
+- All 14 tests passing
+- Linting passes (go vet, gofmt)
+- Marked task as complete in PRD.md
