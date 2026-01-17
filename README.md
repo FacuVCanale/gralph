@@ -35,22 +35,6 @@ EOF
 
 That's it. Ralphy will work through each task autonomously.
 
-## Running the Bun Server
-
-This project includes a simple Bun HTTP server. To run it:
-
-```bash
-# Install dependencies
-bun install
-
-# Start the server
-bun run start
-```
-
-The server runs on port 3000 with the following endpoints:
-- `GET /` - Returns "Hello from Bun"
-- `GET /health` - Returns `{"status":"ok"}`
-
 ## Requirements
 
 **Required:**
