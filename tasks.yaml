@@ -1,42 +1,52 @@
 version: 1
 tasks:
-  - id: TASK-001
-    title: "Set up frontend scaffold and config hooks (scheduler/social links), ensure lint/type tooling ready"
+  - id: SETUP-001
+    title: "Initialize project structure and dependencies"
     completed: true
     dependsOn: []
-    mutex: ["lockfile", "global-config"]
-  - id: TASK-002
-    title: "Implement hero credibility block with CTA using configurable scheduler URL and badges"
-    completed: false
-    dependsOn: ["TASK-001"]
+    mutex: ["lockfile"]
+  - id: SETUP-002
+    title: "Create global configuration for scheduler URL and social links"
+    completed: true
+    dependsOn: ["SETUP-001"]
+    mutex: ["global-config"]
+  - id: SETUP-003
+    title: "Set up routing with anchor navigation for all sections"
+    completed: true
+    dependsOn: ["SETUP-001"]
+    mutex: ["router"]
+  - id: US-001
+    title: "Build Hero & Credibility Block with name, title, value proposition, and CTA"
+    completed: true
+    dependsOn: ["SETUP-002"]
     mutex: []
-  - id: TASK-003
-    title: "Build services/outcomes section with audience labels and repeated CTA"
-    completed: false
-    dependsOn: ["TASK-002"]
+  - id: US-002
+    title: "Build Services & Outcomes section with service cards and outcome labels"
+    completed: true
+    dependsOn: ["US-001"]
     mutex: []
-  - id: TASK-004
-    title: "Add case-highlight strip covering research/architecture and market impact signals"
-    completed: false
-    dependsOn: ["TASK-002"]
+  - id: US-003
+    title: "Build Case Signal / Highlights section with business impact bullets"
+    completed: true
+    dependsOn: ["US-002"]
     mutex: []
-  - id: TASK-005
-    title: "Create thought-leadership teaser section with external links and optional capture stub"
-    completed: false
-    dependsOn: ["TASK-003"]
+  - id: US-004
+    title: "Build Thought Leadership Teasers section with micro-insights"
+    completed: true
+    dependsOn: ["US-003"]
     mutex: []
-  - id: TASK-006
-    title: "Implement trust/bio section with headshot placeholder and social links"
-    completed: false
-    dependsOn: ["TASK-002"]
+  - id: US-005
+    title: "Build Contact / Booking Flow with Calendly link, email, and form"
+    completed: true
+    dependsOn: ["US-004"]
     mutex: []
-  - id: TASK-007
-    title: "Build contact/booking flow with CTA scroll, mailto backup, stubbed form validation and confirmation"
-    completed: false
-    dependsOn: ["TASK-003"]
+  - id: US-006
+    title: "Build Trust & Bio Section with avatar placeholder and social links"
+    completed: true
+    dependsOn: ["US-005"]
     mutex: []
-  - id: TASK-008
-    title: "Add SEO/performance/accessibility guardrails (meta tags, schema.org Person, lazy loading, checks)"
-    completed: false
-    dependsOn: ["TASK-002", "TASK-003", "TASK-004", "TASK-005", "TASK-006", "TASK-007"]
+  - id: US-007
+    title: "Add SEO metadata, schema.org Person markup, and performance optimizations"
+    completed: true
+    dependsOn: ["SETUP-002"]
     mutex: []

@@ -24,6 +24,7 @@ MAX_ITERATIONS=0  # 0 = unlimited
 MAX_RETRIES=3
 RETRY_DELAY=5
 VERBOSE=false
+EXTERNAL_FAIL_TIMEOUT=300
 
 # Git branch options
 BRANCH_PER_TASK=false
@@ -76,6 +77,13 @@ declare -a parallel_pids=()
 declare -a task_branches=()
 WORKTREE_BASE=""  # Base directory for parallel agent worktrees
 ORIGINAL_DIR=""   # Original working directory (for worktree operations)
+EXTERNAL_FAIL_DETECTED=false
+EXTERNAL_FAIL_REASON=""
+EXTERNAL_FAIL_TASK_ID=""
+declare -a ACTIVE_PIDS=()
+declare -a ACTIVE_TASK_IDS=()
+declare -a ACTIVE_STATUS_FILES=()
+declare -a ACTIVE_LOG_FILES=()
 
 # ============================================
 # UTILITY FUNCTIONS
@@ -120,6 +128,113 @@ ensure_parent_dir_writable() {
   dir_path=$(dirname "$file_path")
   mkdir -p "$dir_path" 2>/dev/null || return 1
   [[ -w "$dir_path" ]]
+}
+
+# Extract a useful error message from a task log file
+extract_error_from_log() {
+  local log_file=$1
+  local err=""
+  if [[ -s "$log_file" ]]; then
+    err=$(grep -v '^\[DEBUG\]' "$log_file" | tail -1)
+    [[ -z "$err" ]] && err=$(tail -1 "$log_file")
+  fi
+  echo "$err"
+}
+
+# Heuristic: detect external/infra/toolchain failures
+is_external_failure_error() {
+  local msg=$1
+  [[ -z "$msg" ]] && return 1
+  local lower
+  lower=$(printf '%s' "$msg" | tr '[:upper:]' '[:lower:]')
+  echo "$lower" | grep -Eq 'buninstallfailederror|command not found|enoent|eacces|permission denied|network|timeout|tls|econnreset|etimedout|lockfile|install|certificate|ssl'
+}
+
+persist_task_log() {
+  local task_id=$1
+  local log_file=$2
+  [[ -z "$ARTIFACTS_DIR" ]] && return
+  local reports_dir="$ORIGINAL_DIR/$ARTIFACTS_DIR/reports"
+  mkdir -p "$reports_dir"
+  if [[ -s "$log_file" ]]; then
+    cp "$log_file" "$reports_dir/$task_id.log" 2>/dev/null || true
+  fi
+}
+
+write_failed_task_report() {
+  local task_id=$1
+  local task_title=$2
+  local error_msg=$3
+  local failure_type=$4
+  local branch=$5
+  [[ -z "$ARTIFACTS_DIR" ]] && return
+  local reports_dir="$ORIGINAL_DIR/$ARTIFACTS_DIR/reports"
+  mkdir -p "$reports_dir"
+  cat > "$reports_dir/$task_id.json" << EOF
+{
+  "taskId": "$task_id",
+  "title": "$task_title",
+  "branch": "$branch",
+  "status": "failed",
+  "failureType": "$failure_type",
+  "errorMessage": "$error_msg",
+  "commits": 0,
+  "changedFiles": "",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+print_blocked_tasks() {
+  echo ""
+  echo "${RED}Blocked tasks:${RESET}"
+  for id in "${!SCHED_STATE[@]}"; do
+    if [[ "${SCHED_STATE[$id]}" == "pending" ]]; then
+      local reason
+      reason=$(scheduler_explain_block "$id")
+      echo "  $id: $reason"
+    fi
+  done
+}
+
+external_fail_graceful_stop() {
+  local timeout=${1:-300}
+  [[ "$timeout" =~ ^[0-9]+$ ]] || timeout=300
+  local deadline=$((SECONDS + timeout))
+
+  while [[ $(scheduler_count_running) -gt 0 && $SECONDS -lt $deadline ]]; do
+    sleep 0.5
+  done
+
+  if [[ $(scheduler_count_running) -gt 0 ]]; then
+    log_warn "External failure timeout reached; terminating remaining tasks."
+    for idx in "${!ACTIVE_PIDS[@]}"; do
+      local pid="${ACTIVE_PIDS[$idx]}"
+      if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+      fi
+    done
+    sleep 2
+    for idx in "${!ACTIVE_PIDS[@]}"; do
+      local pid="${ACTIVE_PIDS[$idx]}"
+      local task_id="${ACTIVE_TASK_IDS[$idx]:-}"
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+      if [[ -n "$task_id" ]]; then
+        scheduler_fail_task "$task_id"
+        local task_title
+        task_title=$(get_task_title_by_id_yaml_v1 "$task_id")
+        write_failed_task_report "$task_id" "$task_title" "external-timeout" "external" ""
+      fi
+      if [[ -n "${ACTIVE_STATUS_FILES[$idx]:-}" ]]; then
+        echo "failed" > "${ACTIVE_STATUS_FILES[$idx]}" 2>/dev/null || true
+      fi
+      if [[ -n "${ACTIVE_LOG_FILES[$idx]:-}" ]]; then
+        persist_task_log "$task_id" "${ACTIVE_LOG_FILES[$idx]}"
+      fi
+    done
+  fi
 }
 
 # Return candidate skill files to check for existence
@@ -327,6 +442,7 @@ ${BOLD}EXECUTION OPTIONS:${RESET}
   --max-iterations N  Stop after N iterations (0 = unlimited)
   --max-retries N     Max retries per task on failure (default: 3)
   --retry-delay N     Seconds between retries (default: 5)
+  --external-fail-timeout N  Seconds to wait for running tasks on external failure (default: 300)
   --dry-run           Show what would be done without executing
 
 ${BOLD}PARALLEL EXECUTION:${RESET}
@@ -449,6 +565,10 @@ parse_args() {
         ;;
       --retry-delay)
         RETRY_DELAY="${2:-5}"
+        shift 2
+        ;;
+      --external-fail-timeout)
+        EXTERNAL_FAIL_TIMEOUT="${2:-300}"
         shift 2
         ;;
       --parallel)
@@ -633,6 +753,9 @@ check_requirements() {
 
 cleanup() {
   local exit_code=$?
+  
+  # Restore cursor visibility (in case we were in a progress loop)
+  printf "\e[?25h" 2>/dev/null || true
   
   # Kill background processes
   [[ -n "$monitor_pid" ]] && kill "$monitor_pid" 2>/dev/null || true
@@ -2524,6 +2647,42 @@ Focus only on implementing: $task_name"
       )
     fi
     
+    # Save task report BEFORE cleanup (while worktree still exists)
+    if [[ -n "$ARTIFACTS_DIR" ]]; then
+      local changed_files
+      changed_files=$(git -C "$worktree_dir" diff --name-only "$BASE_BRANCH"..HEAD 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+      
+      # Read progress notes from worktree
+      local progress_notes=""
+      if [[ -f "$worktree_dir/progress.txt" ]]; then
+        progress_notes=$(cat "$worktree_dir/progress.txt" 2>/dev/null | tail -50 | sed 's/"/\\"/g' | tr '\n' ' ')
+      fi
+      
+      local task_id_slug
+      task_id_slug=$(echo "$task_name" | sed 's/[^a-zA-Z0-9]/-/g' | cut -c1-30)
+      
+      mkdir -p "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports"
+      cat > "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports/agent-${agent_num}-${task_id_slug}.json" << EOF
+{
+  "taskId": "agent-$agent_num",
+  "title": "$task_name",
+  "branch": "$branch_name",
+  "status": "done",
+  "commits": $commit_count,
+  "changedFiles": "$changed_files",
+  "progressNotes": "$progress_notes",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+      
+      # Append to main progress.txt
+      if [[ -f "$worktree_dir/progress.txt" ]] && [[ -s "$worktree_dir/progress.txt" ]]; then
+        echo "" >> "$ORIGINAL_DIR/progress.txt"
+        echo "### Agent $agent_num - $task_name ($(date +%Y-%m-%d))" >> "$ORIGINAL_DIR/progress.txt"
+        tail -20 "$worktree_dir/progress.txt" >> "$ORIGINAL_DIR/progress.txt"
+      fi
+    fi
+    
     # Write success output
     echo "done" > "$status_file"
     echo "$input_tokens $output_tokens $branch_name" > "$output_file"
@@ -2660,6 +2819,39 @@ Focus only on implementing: $task_title"
         --body "Automated: $task_id" ${PR_DRAFT:+--draft} 2>>"$log_file" || true
     fi
     
+    # Save task report BEFORE cleanup (while worktree still exists)
+    if [[ -n "$ARTIFACTS_DIR" ]]; then
+      local changed_files
+      changed_files=$(git -C "$worktree_dir" diff --name-only "$BASE_BRANCH"..HEAD 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+      
+      # Read progress notes from worktree
+      local progress_notes=""
+      if [[ -f "$worktree_dir/progress.txt" ]]; then
+        progress_notes=$(cat "$worktree_dir/progress.txt" 2>/dev/null | tail -50 | sed 's/"/\\"/g' | tr '\n' ' ')
+      fi
+      
+      mkdir -p "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports"
+      cat > "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports/$task_id.json" << EOF
+{
+  "taskId": "$task_id",
+  "title": "$task_title",
+  "branch": "$branch_name",
+  "status": "done",
+  "commits": $commit_count,
+  "changedFiles": "$changed_files",
+  "progressNotes": "$progress_notes",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+      
+      # Append to main progress.txt
+      if [[ -f "$worktree_dir/progress.txt" ]] && [[ -s "$worktree_dir/progress.txt" ]]; then
+        echo "" >> "$ORIGINAL_DIR/progress.txt"
+        echo "### $task_id - $task_title ($(date +%Y-%m-%d))" >> "$ORIGINAL_DIR/progress.txt"
+        tail -20 "$worktree_dir/progress.txt" >> "$ORIGINAL_DIR/progress.txt"
+      fi
+    fi
+    
     echo "done" > "$status_file"
     echo "0 0 $branch_name $task_id" > "$output_file"
     cleanup_agent_worktree "$worktree_dir" "$branch_name" "$log_file"
@@ -2694,6 +2886,11 @@ run_parallel_tasks_yaml_v1() {
   
   # Initialize scheduler
   scheduler_init_yaml_v1
+
+  # Reset external failure tracking
+  EXTERNAL_FAIL_DETECTED=false
+  EXTERNAL_FAIL_REASON=""
+  EXTERNAL_FAIL_TASK_ID=""
   
   local pending running
   pending=$(scheduler_count_pending)
@@ -2796,6 +2993,12 @@ run_parallel_tasks_yaml_v1() {
       batch_pids+=("$spawned_pid")
       
     done
+
+    # Track active batch for potential graceful stop
+    ACTIVE_PIDS=("${batch_pids[@]}")
+    ACTIVE_TASK_IDS=("${batch_ids[@]}")
+    ACTIVE_STATUS_FILES=("${status_files[@]}")
+    ACTIVE_LOG_FILES=("${log_files[@]}")
     
     # Wait for this batch with progress - show each agent on its own line
     local spinner_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -2812,8 +3015,6 @@ run_parallel_tasks_yaml_v1() {
     
     # Hide cursor during progress updates to prevent flickering
     printf "\e[?25l"
-    # Ensure cursor is restored on exit/interrupt
-    trap 'printf "\e[?25h"' EXIT INT TERM
     
     while true; do
       local all_done=true
@@ -2890,7 +3091,6 @@ run_parallel_tasks_yaml_v1() {
     
     # Restore cursor visibility
     printf "\e[?25h"
-    trap - EXIT INT TERM
     
     # Wait for processes
     for pid in "${batch_pids[@]}"; do
@@ -2900,10 +3100,14 @@ run_parallel_tasks_yaml_v1() {
     # Process results
     for ((j=0; j<${#batch_ids[@]}; j++)); do
       local task_id="${batch_ids[$j]}"
+      local log_file="${log_files[$j]}"
       local status
       status=$(cat "${status_files[$j]}" 2>/dev/null || echo "unknown")
       local title
       title=$(get_task_title_by_id_yaml_v1 "$task_id")
+
+      # Persist task log for both done and failed tasks
+      persist_task_log "$task_id" "$log_file"
       
       if [[ "$status" == "done" ]]; then
         scheduler_complete_task "$task_id"
@@ -2912,24 +3116,50 @@ run_parallel_tasks_yaml_v1() {
         [[ -n "$branch" ]] && completed_branches+=("$branch")
         completed_task_ids+=("$task_id")
         
-        # Save task report
-        save_task_report "$task_id" "$branch" "$WORKTREE_BASE/agent-$((j+1))" "done"
+        # Note: task report is now saved by the agent before cleanup
         
         printf "  ${GREEN}✓${RESET} %s (%s)\n" "${title:0:45}" "$task_id"
       else
         scheduler_fail_task "$task_id"
         printf "  ${RED}✗${RESET} %s (%s)\n" "${title:0:45}" "$task_id"
-        if [[ -s "${log_files[$j]}" ]]; then
-          # Show last non-DEBUG line as error
-          local err_msg
-          err_msg=$(grep -v '^\[DEBUG\]' "${log_files[$j]}" | tail -1)
-          [[ -z "$err_msg" ]] && err_msg=$(tail -1 "${log_files[$j]}")
-          echo "${DIM}    Error: ${err_msg}${RESET}"
+        # Show last non-DEBUG line as error (if any)
+        local err_msg
+        err_msg=$(extract_error_from_log "$log_file")
+        [[ -n "$err_msg" ]] && echo "${DIM}    Error: ${err_msg}${RESET}"
+
+        local failure_type="unknown"
+        if [[ -n "$err_msg" ]]; then
+          if is_external_failure_error "$err_msg"; then
+            failure_type="external"
+          else
+            failure_type="internal"
+          fi
+        fi
+
+        write_failed_task_report "$task_id" "$title" "$err_msg" "$failure_type" ""
+
+        if [[ "$failure_type" == "external" && "$EXTERNAL_FAIL_DETECTED" != true ]]; then
+          EXTERNAL_FAIL_DETECTED=true
+          EXTERNAL_FAIL_TASK_ID="$task_id"
+          EXTERNAL_FAIL_REASON="$err_msg"
         fi
       fi
       
       rm -f "${status_files[$j]}" "${output_files[$j]}" "${log_files[$j]}" "${stream_files[$j]}"
     done
+
+    if [[ "$EXTERNAL_FAIL_DETECTED" == true ]]; then
+      log_error "External failure detected: $EXTERNAL_FAIL_TASK_ID - $EXTERNAL_FAIL_REASON"
+      print_blocked_tasks
+      external_fail_graceful_stop "$EXTERNAL_FAIL_TIMEOUT"
+      return 1
+    fi
+
+    # Clear active batch trackers
+    ACTIVE_PIDS=()
+    ACTIVE_TASK_IDS=()
+    ACTIVE_STATUS_FILES=()
+    ACTIVE_LOG_FILES=()
     
     # Check max iterations
     if [[ $MAX_ITERATIONS -gt 0 && $iteration -ge $MAX_ITERATIONS ]]; then
@@ -3135,8 +3365,6 @@ run_parallel_tasks() {
 
       # Hide cursor during progress updates to prevent flickering
       printf "\e[?25l"
-      # Ensure cursor is restored on exit/interrupt
-      trap 'printf "\e[?25h"' EXIT INT TERM
 
       while true; do
         # Check if all processes are done
@@ -3203,7 +3431,6 @@ run_parallel_tasks() {
 
       # Restore cursor visibility
       printf "\e[?25h"
-      trap - EXIT INT TERM
 
       # Wait for all processes to fully complete
       for pid in "${parallel_pids[@]}"; do
@@ -3570,11 +3797,16 @@ main() {
 
   # Run in parallel or sequential mode
   if [[ "$PARALLEL" == true ]]; then
+    local parallel_result=0
     # Use DAG scheduler for YAML v1, otherwise legacy parallel
     if [[ "$PRD_SOURCE" == "yaml" ]] && is_yaml_v1; then
-      run_parallel_tasks_yaml_v1
+      run_parallel_tasks_yaml_v1 || parallel_result=$?
     else
-      run_parallel_tasks
+      run_parallel_tasks || parallel_result=$?
+    fi
+    if [[ "$parallel_result" -ne 0 ]]; then
+      notify_error "Ralphy stopped due to external failure or deadlock"
+      exit "$parallel_result"
     fi
     show_summary
     notify_done
