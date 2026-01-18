@@ -106,12 +106,37 @@ cat artifacts/run-*/reports/TASK-ID.json | jq '.branch'
 git checkout <branch>
 ```
 
-## Skills
+## Workflow
 
-GRALPH uses skills for reusable instruction bundles. Install missing skills:
+1) Write a PRD or provide a `tasks.yaml`
+2) Run gralph with your preferred engine:
+   ```bash
+   ./scripts/gralph/gralph.sh --opencode --parallel
+   ```
+3) Inspect artifacts and merge/PR as needed
 
+### Engines
+
+GRALPH supports multiple AI engines:
+- `--opencode` (OpenCode)
+- `--claude` (Claude Code)
+- `--cursor` (Cursor)
+- `--codex` (Codex CLI)
+
+### Skills
+
+GRALPH uses skills for reusable instruction bundles. Each engine can install its own skills:
+
+**For OpenCode users:**
 ```bash
-./scripts/gralph/gralph.sh --init
+# Load PRD skill and create a PRD for your feature
+Load prd skill and create a PRD for [feature description]
+
+# Convert the PRD to gralph format
+Load ralph skill and convert tasks/prd-[feature].md to prd.json
+
+# Run gralph
+./scripts/gralph/gralph.sh --opencode --parallel
 ```
 
 Available skills:
