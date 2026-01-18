@@ -1,6 +1,6 @@
-# Ralphy
+# Ralph
 
-![Ralphy](assets/ralphy.jpeg)
+![Ralph](assets/ralph.jpeg)
 
 An autonomous AI coding loop that runs AI assistants (Claude Code, OpenCode, Codex, or Cursor) to work through tasks until everything is complete.
 
@@ -15,9 +15,9 @@ An autonomous AI coding loop that runs AI assistants (Claude Code, OpenCode, Cod
 
 ```bash
 # Clone the repo
-git clone https://github.com/michaelshimeles/ralphy.git
-cd ralphy
-chmod +x ralphy.sh
+git clone https://github.com/juanfra/central-ralph.git
+cd central-ralph
+chmod +x ralph.sh
 
 # Create a PRD file with tasks
 cat > PRD.md << 'EOF'
@@ -29,11 +29,17 @@ cat > PRD.md << 'EOF'
 - [ ] Build API endpoints
 EOF
 
-# Run Ralphy
-./ralphy.sh
+# Run Ralph
+./ralph.sh
 ```
 
-That's it. Ralphy will work through each task autonomously.
+That's it. Ralph will work through each task autonomously.
+
+## Usage
+
+1. Create a task source (Markdown PRD by default, YAML, or GitHub Issues).
+2. Run `./ralph.sh` from the repo root (add `--codex`, `--opencode`, or `--cursor` if needed).
+3. Review the output: tasks completed, branches created, and any PRs if enabled.
 
 ## Requirements
 
@@ -46,12 +52,24 @@ That's it. Ralphy will work through each task autonomously.
 - `gh` - only if using GitHub Issues or `--create-pr`
 - `bc` - for cost calculation
 
+## Skills Setup
+
+Ralph can install the `prd` and `ralph` skills for the active AI engine:
+
+```bash
+./ralph.sh --init
+```
+
+- Installs only missing skills (never overwrites).
+- Use `--skills-url URL` or `RALPH_SKILLS_BASE_URL` to override the download source.
+- Cursor does not have official skill support; installs are best-effort as `.cursor/rules/*.mdc`.
+
 ## Task Sources
 
 ### Markdown (default)
 
 ```bash
-./ralphy.sh --prd PRD.md
+./ralph.sh --prd PRD.md
 ```
 
 Format your PRD like this:
@@ -65,7 +83,7 @@ Format your PRD like this:
 ### YAML
 
 ```bash
-./ralphy.sh --yaml tasks.yaml
+./ralph.sh --yaml tasks.yaml
 ```
 
 Format:
@@ -80,8 +98,8 @@ tasks:
 ### GitHub Issues
 
 ```bash
-./ralphy.sh --github owner/repo
-./ralphy.sh --github owner/repo --github-label "ready"
+./ralph.sh --github owner/repo
+./ralph.sh --github owner/repo --github-label "ready"
 ```
 
 Uses open issues from the repo. Issues are closed automatically when done.
@@ -91,21 +109,21 @@ Uses open issues from the repo. Issues are closed automatically when done.
 Run multiple AI agents simultaneously, each in its own isolated git worktree:
 
 ```bash
-./ralphy.sh --parallel                    # 3 agents (default)
-./ralphy.sh --parallel --max-parallel 5   # 5 agents
+./ralph.sh --parallel                    # 3 agents (default)
+./ralph.sh --parallel --max-parallel 5   # 5 agents
 ```
 
 ### How It Works
 
 Each agent gets:
 - Its own git worktree (separate directory)
-- Its own branch (`ralphy/agent-1-task-name`, `ralphy/agent-2-task-name`, etc.)
+- Its own branch (`ralph/agent-1-task-name`, `ralph/agent-2-task-name`, etc.)
 - Complete isolation from other agents
 
 ```
-Agent 1 ─► worktree: /tmp/xxx/agent-1 ─► branch: ralphy/agent-1-create-user-model
-Agent 2 ─► worktree: /tmp/xxx/agent-2 ─► branch: ralphy/agent-2-add-api-endpoints
-Agent 3 ─► worktree: /tmp/xxx/agent-3 ─► branch: ralphy/agent-3-setup-database
+Agent 1 ─► worktree: /tmp/xxx/agent-1 ─► branch: ralph/agent-1-create-user-model
+Agent 2 ─► worktree: /tmp/xxx/agent-2 ─► branch: ralph/agent-2-add-api-endpoints
+Agent 3 ─► worktree: /tmp/xxx/agent-3 ─► branch: ralph/agent-3-setup-database
 ```
 
 ### After Completion
@@ -115,8 +133,8 @@ Agent 3 ─► worktree: /tmp/xxx/agent-3 ─► branch: ralphy/agent-3-setup-da
 **With `--create-pr`:** Each completed task gets its own pull request. Branches are kept for review.
 
 ```bash
-./ralphy.sh --parallel --create-pr          # Create PRs for each task
-./ralphy.sh --parallel --create-pr --draft-pr  # Create draft PRs
+./ralph.sh --parallel --create-pr          # Create PRs for each task
+./ralph.sh --parallel --create-pr --draft-pr  # Create draft PRs
 ```
 
 ### YAML Parallel Groups
@@ -140,23 +158,23 @@ Tasks without `parallel_group` default to group `0` and run before higher-number
 Create a separate branch for each task:
 
 ```bash
-./ralphy.sh --branch-per-task                        # Create feature branches
-./ralphy.sh --branch-per-task --base-branch main     # Branch from main
-./ralphy.sh --branch-per-task --create-pr            # Create PRs automatically
-./ralphy.sh --branch-per-task --create-pr --draft-pr # Create draft PRs
+./ralph.sh --branch-per-task                        # Create feature branches
+./ralph.sh --branch-per-task --base-branch main     # Branch from main
+./ralph.sh --branch-per-task --create-pr            # Create PRs automatically
+./ralph.sh --branch-per-task --create-pr --draft-pr # Create draft PRs
 ```
 
-Branch naming: `ralphy/<task-name-slug>`
+Branch naming: `ralph/<task-name-slug>`
 
-Example: "Add user authentication" becomes `ralphy/add-user-authentication`
+Example: "Add user authentication" becomes `ralph/add-user-authentication`
 
 ## AI Engine
 
 ```bash
-./ralphy.sh              # Claude Code (default)
-./ralphy.sh --codex      # Codex CLI
-./ralphy.sh --opencode   # OpenCode
-./ralphy.sh --cursor     # Cursor agent
+./ralph.sh              # Claude Code (default)
+./ralph.sh --codex      # Codex CLI
+./ralph.sh --opencode   # OpenCode
+./ralph.sh --cursor     # Cursor agent
 ```
 
 ### Engine Details
@@ -168,7 +186,7 @@ Example: "Add user authentication" becomes `ralphy/add-user-authentication`
 | Codex | `codex` | N/A | Token usage (if provided) |
 | Cursor | `agent` | `--force` | API duration (no token counts) |
 
-**Note:** Cursor's CLI doesn't expose token usage, so Ralphy tracks total API duration instead.
+**Note:** Cursor's CLI doesn't expose token usage, so Ralph tracks total API duration instead.
 
 ## All Options
 
@@ -220,6 +238,8 @@ Example: "Add user authentication" becomes `ralphy/add-user-authentication`
 ### Other
 | Flag | Description |
 |------|-------------|
+| `--init` | Install missing skills for the active engine and exit |
+| `--skills-url URL` | Override skills base URL (default: GitHub raw) |
 | `-v, --verbose` | Debug output |
 | `-h, --help` | Show help |
 | `--version` | Show version |
@@ -228,34 +248,37 @@ Example: "Add user authentication" becomes `ralphy/add-user-authentication`
 
 ```bash
 # Basic usage
-./ralphy.sh
+./ralph.sh
 
 # Basic usage with Codex
-./ralphy.sh --codex
+./ralph.sh --codex
 
 # Fast mode with OpenCode
-./ralphy.sh --opencode --fast
+./ralph.sh --opencode --fast
 
 # Use Cursor agent
-./ralphy.sh --cursor
+./ralph.sh --cursor
 
 # Cursor with parallel execution
-./ralphy.sh --cursor --parallel --max-parallel 4
+./ralph.sh --cursor --parallel --max-parallel 4
 
 # Parallel with 4 agents and auto-PRs
-./ralphy.sh --parallel --max-parallel 4 --create-pr
+./ralph.sh --parallel --max-parallel 4 --create-pr
 
 # GitHub issues with parallel execution
-./ralphy.sh --github myorg/myrepo --parallel
+./ralph.sh --github myorg/myrepo --parallel
 
 # Feature branch workflow
-./ralphy.sh --branch-per-task --create-pr --base-branch main
+./ralph.sh --branch-per-task --create-pr --base-branch main
 
 # Limited iterations with draft PRs
-./ralphy.sh --max-iterations 5 --branch-per-task --create-pr --draft-pr
+./ralph.sh --max-iterations 5 --branch-per-task --create-pr --draft-pr
 
 # Preview what would happen
-./ralphy.sh --dry-run --verbose
+./ralph.sh --dry-run --verbose
+
+# Install skills for the active engine
+./ralph.sh --init
 ```
 
 ## Progress Display
@@ -272,7 +295,7 @@ In parallel mode:
 
 ## Cost Tracking
 
-At completion, Ralphy shows different metrics depending on the AI engine:
+At completion, Ralph shows different metrics depending on the AI engine:
 
 | Engine | Metrics Shown |
 |--------|---------------|

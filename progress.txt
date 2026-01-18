@@ -1,0 +1,23 @@
+# Ralph Progress Log
+
+This file tracks the progress and learnings from Ralph iterations.
+Each completed task should add an entry here for future reference.
+
+## Recent Iterations
+
+<!-- Ralph will append progress entries here automatically -->
+
+## Patterns Discovered
+
+- Always check for existing patterns in AGENTS.md before implementing new features
+- Prefer established libraries and frameworks already used in the project
+- Follow the existing code style and naming conventions
+- Test thoroughly before marking tasks complete
+
+## Common Issues Resolved
+
+<!-- Document solutions to problems encountered during development -->
+
+## Performance Optimizations
+
+<!-- Track performance improvements and best practices discovered -->

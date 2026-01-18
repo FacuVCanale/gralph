@@ -40,6 +40,10 @@ PRD_FILE="PRD.md"
 GITHUB_REPO=""
 GITHUB_LABEL=""
 
+# Skills init options
+SKILLS_INIT=false
+SKILLS_BASE_URL="${RALPH_SKILLS_BASE_URL:-https://raw.githubusercontent.com/frizynn/central-ralph/main/skills}"
+
 # Colors (detect if terminal supports colors)
 if [[ -t 1 ]] && command -v tput &>/dev/null && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
   RED=$(tput setaf 1)
@@ -103,6 +107,198 @@ slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g' | sed -E 's/^-|-$//g' | cut -c1-50
 }
 
+# Resolve repo root (fallback to current directory)
+resolve_repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
+# Check if a directory can be created/written
+ensure_parent_dir_writable() {
+  local file_path=$1
+  local dir_path
+  dir_path=$(dirname "$file_path")
+  mkdir -p "$dir_path" 2>/dev/null || return 1
+  [[ -w "$dir_path" ]]
+}
+
+# Return candidate skill files to check for existence
+get_skill_file_candidates() {
+  local engine=$1
+  local skill=$2
+  local repo_root
+  repo_root=$(resolve_repo_root)
+
+  case "$engine" in
+    claude)
+      echo "$repo_root/.claude/skills/$skill/SKILL.md"
+      echo "$HOME/.claude/skills/$skill/SKILL.md"
+      ;;
+    codex)
+      echo "$repo_root/.codex/skills/$skill/SKILL.md"
+      echo "$HOME/.codex/skills/$skill/SKILL.md"
+      ;;
+    opencode)
+      echo "$repo_root/.opencode/skill/$skill/SKILL.md"
+      echo "$HOME/.config/opencode/skill/$skill/SKILL.md"
+      ;;
+    cursor)
+      echo "$repo_root/.cursor/rules/${skill}.mdc"
+      echo "$repo_root/.cursor/commands/${skill}.md"
+      ;;
+  esac
+}
+
+# Pick install target (prefer project path, fallback to user path)
+get_skill_install_target() {
+  local engine=$1
+  local skill=$2
+  local repo_root
+  repo_root=$(resolve_repo_root)
+
+  local project_target=""
+  local user_target=""
+
+  case "$engine" in
+    claude)
+      project_target="$repo_root/.claude/skills/$skill/SKILL.md"
+      user_target="$HOME/.claude/skills/$skill/SKILL.md"
+      ;;
+    codex)
+      project_target="$repo_root/.codex/skills/$skill/SKILL.md"
+      user_target="$HOME/.codex/skills/$skill/SKILL.md"
+      ;;
+    opencode)
+      project_target="$repo_root/.opencode/skill/$skill/SKILL.md"
+      user_target="$HOME/.config/opencode/skill/$skill/SKILL.md"
+      ;;
+    cursor)
+      project_target="$repo_root/.cursor/rules/${skill}.mdc"
+      ;;
+  esac
+
+  if [[ -n "$project_target" ]] && ensure_parent_dir_writable "$project_target"; then
+    echo "$project_target"
+    return 0
+  fi
+
+  if [[ -n "$user_target" ]] && ensure_parent_dir_writable "$user_target"; then
+    echo "$user_target"
+    return 0
+  fi
+
+  echo ""
+  return 1
+}
+
+skill_exists() {
+  local engine=$1
+  local skill=$2
+
+  while IFS= read -r candidate; do
+    [[ -f "$candidate" ]] && return 0
+  done < <(get_skill_file_candidates "$engine" "$skill")
+
+  return 1
+}
+
+download_skill_content() {
+  local skill=$1
+  local base_url="${SKILLS_BASE_URL%/}"
+  local url="${base_url}/${skill}/SKILL.md"
+  local tmpfile
+  tmpfile=$(mktemp)
+  local repo_root
+  repo_root=$(resolve_repo_root)
+  local local_skill_path="${repo_root}/skills/${skill}/SKILL.md"
+
+  if command -v curl &>/dev/null; then
+    if ! curl -fsSL "$url" -o "$tmpfile"; then
+      if [[ -f "$local_skill_path" ]]; then
+        cp "$local_skill_path" "$tmpfile"
+        log_warn "Falling back to local skill source for '$skill'" >&2
+        echo "$tmpfile"
+        return 0
+      fi
+      return 1
+    fi
+  elif command -v wget &>/dev/null; then
+    if ! wget -qO "$tmpfile" "$url"; then
+      if [[ -f "$local_skill_path" ]]; then
+        cp "$local_skill_path" "$tmpfile"
+        log_warn "Falling back to local skill source for '$skill'" >&2
+        echo "$tmpfile"
+        return 0
+      fi
+      return 1
+    fi
+  else
+    log_error "Missing downloader: install curl or wget"
+    return 1
+  fi
+
+  echo "$tmpfile"
+}
+
+install_skill_if_missing() {
+  local engine=$1
+  local skill=$2
+
+  if skill_exists "$engine" "$skill"; then
+    log_info "Skill '$skill' already installed for $engine, skipping"
+    return 0
+  fi
+
+  local target
+  target=$(get_skill_install_target "$engine" "$skill")
+  if [[ -z "$target" ]]; then
+    log_warn "No writable install path for $engine skill '$skill'"
+    return 1
+  fi
+
+  local tmpfile
+  if ! tmpfile=$(download_skill_content "$skill"); then
+    log_error "Failed to download skill '$skill' from ${SKILLS_BASE_URL}"
+    return 1
+  fi
+
+  if mv "$tmpfile" "$target"; then
+    log_success "Installed '$skill' for $engine at $target"
+    return 0
+  fi
+
+  log_error "Failed to install '$skill' for $engine at $target"
+  return 1
+}
+
+ensure_skills_for_engine() {
+  local engine=$1
+  local mode=$2
+  local skills=("prd" "ralph")
+  local missing=false
+
+  if [[ "$engine" == "cursor" ]]; then
+    log_warn "Cursor skills are not officially supported; installing as rules is best-effort."
+  fi
+
+  for skill in "${skills[@]}"; do
+    if skill_exists "$engine" "$skill"; then
+      log_info "Skill '$skill' found for $engine"
+      continue
+    fi
+
+    missing=true
+    if [[ "$mode" == "install" ]]; then
+      install_skill_if_missing "$engine" "$skill" || true
+    else
+      log_warn "Missing skill '$skill' for $engine (run --init to install)"
+    fi
+  done
+
+  if [[ "$mode" == "install" ]] && [[ "$missing" == false ]]; then
+    log_success "All skills already present for $engine"
+  fi
+}
+
 # ============================================
 # HELP & VERSION
 # ============================================
@@ -148,6 +344,8 @@ ${BOLD}PRD SOURCE OPTIONS:${RESET}
   --github-label TAG  Filter GitHub issues by label
 
 ${BOLD}OTHER OPTIONS:${RESET}
+  --init              Install missing skills for the current AI engine and exit
+  --skills-url URL    Override skills base URL (default: GitHub raw)
   -v, --verbose       Show debug output
   -h, --help          Show this help
   --version           Show version number
@@ -221,6 +419,14 @@ parse_args() {
       --dry-run)
         DRY_RUN=true
         shift
+        ;;
+      --init)
+        SKILLS_INIT=true
+        shift
+        ;;
+      --skills-url)
+        SKILLS_BASE_URL="${2:-$SKILLS_BASE_URL}"
+        shift 2
         ;;
       --max-iterations)
         MAX_ITERATIONS="${2:-0}"
@@ -1972,6 +2178,11 @@ show_summary() {
 main() {
   parse_args "$@"
 
+  if [[ "$SKILLS_INIT" == true ]]; then
+    ensure_skills_for_engine "$AI_ENGINE" "install"
+    exit 0
+  fi
+
   if [[ "$DRY_RUN" == true ]] && [[ "$MAX_ITERATIONS" -eq 0 ]]; then
     MAX_ITERATIONS=1
   fi
@@ -1982,6 +2193,9 @@ main() {
   
   # Check requirements
   check_requirements
+
+  # Warn if skills are missing
+  ensure_skills_for_engine "$AI_ENGINE" "warn"
   
   # Show banner
   echo "${BOLD}============================================${RESET}"
