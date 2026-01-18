@@ -18,6 +18,7 @@ VERSION="3.1.0"
 SKIP_TESTS=false
 SKIP_LINT=false
 AI_ENGINE="claude"  # claude, opencode, cursor, or codex
+OPENCODE_MODEL="opencode/minimax-m2.1-free"  # Default model for OpenCode (can be overridden with --opencode-model)
 DRY_RUN=false
 MAX_ITERATIONS=0  # 0 = unlimited
 MAX_RETRIES=3
@@ -313,6 +314,7 @@ ${BOLD}USAGE:${RESET}
 ${BOLD}AI ENGINE OPTIONS:${RESET}
   --claude            Use Claude Code (default)
   --opencode          Use OpenCode
+  --opencode-model M  OpenCode model to use (e.g., "openai/gpt-4o", "anthropic/claude-sonnet-4-5")
   --cursor            Use Cursor agent
   --codex             Use Codex CLI
 
@@ -354,6 +356,7 @@ ${BOLD}EXAMPLES:${RESET}
   ./ralphy.sh                              # Run with Claude Code
   ./ralphy.sh --codex                      # Run with Codex CLI
   ./ralphy.sh --opencode                   # Run with OpenCode
+  ./ralphy.sh --opencode --opencode-model openai/gpt-4o  # OpenCode with specific model
   ./ralphy.sh --cursor                     # Run with Cursor agent
   ./ralphy.sh --branch-per-task --create-pr  # Feature branch workflow
   ./ralphy.sh --parallel --max-parallel 4  # Run 4 tasks concurrently
@@ -403,6 +406,14 @@ parse_args() {
       --opencode)
         AI_ENGINE="opencode"
         shift
+        ;;
+      --opencode-model)
+        if [[ -z "${2:-}" ]]; then
+          log_error "--opencode-model requires a model name (e.g., 'openai/gpt-4o')"
+          exit 1
+        fi
+        OPENCODE_MODEL="$2"
+        shift 2
         ;;
       --claude)
         AI_ENGINE="claude"
@@ -862,10 +873,14 @@ validate_tasks_yaml_v1() {
   task_count=$(yq -r '.tasks | length' "$PRD_FILE" 2>/dev/null)
   
   for ((i=0; i<task_count; i++)); do
-    local id title completed
+    local id title completed completed_raw
     id=$(yq -r ".tasks[$i].id // \"\"" "$PRD_FILE")
     title=$(yq -r ".tasks[$i].title // \"\"" "$PRD_FILE")
-    completed=$(yq -r ".tasks[$i].completed // \"\"" "$PRD_FILE")
+    # Important: do NOT use `// ""` here. In yq/jq semantics, `false // ""` becomes "",
+    # which would incorrectly reject valid `completed: false` values.
+    completed_raw=$(yq -r ".tasks[$i].completed" "$PRD_FILE")
+    # Normalize to support yq/yaml variations (CRLF, True/False)
+    completed=$(printf '%s' "$completed_raw" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
     
     # Check required fields
     [[ -z "$id" ]] && errors+=("Task $((i+1)): missing id")
@@ -989,6 +1004,7 @@ scheduler_init_yaml_v1() {
   SCHED_STATE=()
   SCHED_LOCKED=()
   
+  
   while IFS= read -r id; do
     [[ -z "$id" ]] && continue
     if is_task_completed_yaml_v1 "$id"; then
@@ -997,6 +1013,7 @@ scheduler_init_yaml_v1() {
       SCHED_STATE[$id]="pending"
     fi
   done < <(get_all_task_ids_yaml_v1)
+  
 }
 
 # Check if task dependencies are satisfied
@@ -1016,7 +1033,8 @@ scheduler_mutex_available() {
   local id=$1
   while IFS= read -r mutex; do
     [[ -z "$mutex" ]] && continue
-    if [[ -n "${SCHED_LOCKED[$mutex]}" ]]; then
+    # Use :- to provide default empty value (fixes set -u unbound variable)
+    if [[ -n "${SCHED_LOCKED[$mutex]:-}" ]]; then
       return 1
     fi
   done < <(get_task_mutex_by_id_yaml_v1 "$id")
@@ -1119,8 +1137,9 @@ scheduler_explain_block() {
   local blocked_mutex=()
   while IFS= read -r mutex; do
     [[ -z "$mutex" ]] && continue
-    if [[ -n "${SCHED_LOCKED[$mutex]}" ]]; then
-      blocked_mutex+=("$mutex (held by ${SCHED_LOCKED[$mutex]})")
+    # Use :- to provide default empty value (fixes set -u unbound variable)
+    if [[ -n "${SCHED_LOCKED[$mutex]:-}" ]]; then
+      blocked_mutex+=("$mutex (held by ${SCHED_LOCKED[$mutex]:-})")
     fi
   done < <(get_task_mutex_by_id_yaml_v1 "$id")
   
@@ -1221,7 +1240,11 @@ Do NOT implement anything - only create the tasks.yaml file."
   
   case "$AI_ENGINE" in
     opencode)
-      OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$tmpfile" 2>&1
+      if [[ -n "$OPENCODE_MODEL" ]]; then
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json --model "$OPENCODE_MODEL" "$prompt" > "$tmpfile" 2>&1
+      else
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$tmpfile" 2>&1
+      fi
       ;;
     cursor)
       agent --print --force --output-format stream-json "$prompt" > "$tmpfile" 2>&1
@@ -1333,7 +1356,11 @@ git commit --no-edit"
   
   case "$AI_ENGINE" in
     opencode)
-      OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$tmpfile" 2>&1
+      if [[ -n "$OPENCODE_MODEL" ]]; then
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json --model "$OPENCODE_MODEL" "$prompt" > "$tmpfile" 2>&1
+      else
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$tmpfile" 2>&1
+      fi
       ;;
     cursor)
       agent --print --force --output-format stream-json "$prompt" > "$tmpfile" 2>&1
@@ -1407,7 +1434,11 @@ Save to $ARTIFACTS_DIR/review-report.json"
   
   case "$AI_ENGINE" in
     opencode)
-      OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$tmpfile" 2>&1
+      if [[ -n "$OPENCODE_MODEL" ]]; then
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json --model "$OPENCODE_MODEL" "$prompt" > "$tmpfile" 2>&1
+      else
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$tmpfile" 2>&1
+      fi
       ;;
     cursor)
       agent --print --force --output-format stream-json "$prompt" > "$tmpfile" 2>&1
@@ -1641,6 +1672,58 @@ return_to_base_branch() {
 # PROGRESS MONITOR
 # ============================================
 
+# Get current step from agent output file (for parallel display)
+get_agent_current_step() {
+  local file=$1
+  local step="Thinking"
+  
+  if [[ ! -f "$file" ]] || [[ ! -s "$file" ]]; then
+    echo "$step"
+    return
+  fi
+  
+  local content
+  content=$(tail -c 3000 "$file" 2>/dev/null || true)
+  
+  if echo "$content" | grep -qE 'git commit|"command":"git commit'; then
+    step="Committing"
+  elif echo "$content" | grep -qE 'git add|"command":"git add'; then
+    step="Staging"
+  elif echo "$content" | grep -qE 'progress\.txt'; then
+    step="Logging"
+  elif echo "$content" | grep -qE 'PRD\.md|tasks\.yaml'; then
+    step="Updating PRD"
+  elif echo "$content" | grep -qE 'lint|eslint|biome|prettier'; then
+    step="Linting"
+  elif echo "$content" | grep -qE 'vitest|jest|bun test|npm test|pytest|go test'; then
+    step="Testing"
+  elif echo "$content" | grep -qE '\.test\.|\.spec\.|__tests__|_test\.go'; then
+    step="Writing tests"
+  elif echo "$content" | grep -qE '"tool":"[Ww]rite"|"tool":"[Ee]dit"|"name":"write"|"name":"edit"|"tool_name":"write"|"tool_name":"edit"'; then
+    step="Implementing"
+  elif echo "$content" | grep -qE '"tool":"[Rr]ead"|"tool":"[Gg]lob"|"tool":"[Gg]rep"|"name":"read"|"name":"glob"|"name":"grep"|"tool_name":"read"'; then
+    step="Reading code"
+  elif echo "$content" | grep -qE '"tool":"[Bb]ash"|"tool":"[Tt]erminal"|"name":"bash"|"tool_name":"bash"'; then
+    step="Running cmd"
+  elif echo "$content" | grep -qE '"type":"thinking"|"thinking"'; then
+    step="Thinking"
+  fi
+  
+  echo "$step"
+}
+
+# Get step color
+get_step_color() {
+  local step=$1
+  case "$step" in
+    "Thinking"|"Reading code") echo "$CYAN" ;;
+    "Implementing"|"Writing tests") echo "$MAGENTA" ;;
+    "Testing"|"Linting"|"Running cmd") echo "$YELLOW" ;;
+    "Staging"|"Committing") echo "$GREEN" ;;
+    *) echo "$BLUE" ;;
+  esac
+}
+
 monitor_progress() {
   local file=$1
   local task=$2
@@ -1847,9 +1930,11 @@ run_ai_command() {
   case "$AI_ENGINE" in
     opencode)
       # OpenCode: use 'run' command with JSON format and permissive settings
-      OPENCODE_PERMISSION='{"*":"allow"}' opencode run \
-        --format json \
-        "$prompt" > "$output_file" 2>&1 &
+      if [[ -n "$OPENCODE_MODEL" ]]; then
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json --model "$OPENCODE_MODEL" "$prompt" > "$output_file" 2>&1 &
+      else
+        OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt" > "$output_file" 2>&1 &
+      fi
       ;;
     cursor)
       # Cursor agent: use --print for non-interactive, --force to allow all commands
@@ -2085,7 +2170,7 @@ run_single_task() {
 
     # Check for empty response
     if [[ -z "$result" ]]; then
-      ((retry_count++))
+      ((++retry_count))
       log_error "Empty response (attempt $retry_count/$MAX_RETRIES)"
       if [[ $retry_count -lt $MAX_RETRIES ]]; then
         log_info "Retrying in ${RETRY_DELAY}s..."
@@ -2101,7 +2186,7 @@ run_single_task() {
     # Check for API errors
     local error_msg
     if ! error_msg=$(check_for_errors "$result"); then
-      ((retry_count++))
+      ((++retry_count))
       log_error "API error: $error_msg (attempt $retry_count/$MAX_RETRIES)"
       if [[ $retry_count -lt $MAX_RETRIES ]]; then
         log_info "Retrying in ${RETRY_DELAY}s..."
@@ -2214,7 +2299,16 @@ create_agent_worktree() {
     cd "$ORIGINAL_DIR" || { echo "Failed to cd to $ORIGINAL_DIR" >&2; exit 1; }
     
     # Prune any stale worktrees first
-    git worktree prune >&2
+    git worktree prune >&2 2>/dev/null || true
+    
+    # Check if branch exists and has a worktree - if so, remove worktree first
+    local existing_wt
+    existing_wt=$(git worktree list 2>/dev/null | grep "\[$branch_name\]" | awk '{print $1}')
+    if [[ -n "$existing_wt" ]]; then
+      echo "Removing existing worktree for $branch_name at $existing_wt" >&2
+      git worktree remove --force "$existing_wt" >&2 2>/dev/null || true
+      git worktree prune >&2 2>/dev/null || true
+    fi
     
     # Delete branch if it exists (force)
     git branch -D "$branch_name" >&2 2>/dev/null || true
@@ -2268,6 +2362,7 @@ run_parallel_agent() {
   local output_file="$3"
   local status_file="$4"
   local log_file="$5"
+  local stream_file="${6:-}"  # Optional: file for streaming output to display progress
   
   echo "setting up" > "$status_file"
   
@@ -2326,23 +2421,26 @@ Focus only on implementing: $task_name"
   local success=false
   local retry=0
   
+  # Set up tee for streaming if stream_file is provided
+  local tee_cmd="cat"
+  if [[ -n "$stream_file" ]]; then
+    tee_cmd="tee -a $stream_file"
+  fi
+  
   while [[ $retry -lt $MAX_RETRIES ]]; do
+    # Clear stream file on each retry
+    [[ -n "$stream_file" ]] && : > "$stream_file"
+    
     case "$AI_ENGINE" in
       opencode)
-        (
-          cd "$worktree_dir"
-          OPENCODE_PERMISSION='{"*":"allow"}' opencode run \
-            --format json \
-            "$prompt"
-        ) > "$tmpfile" 2>>"$log_file"
+        if [[ -n "$OPENCODE_MODEL" ]]; then
+          (cd "$worktree_dir" && OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json --model "$OPENCODE_MODEL" "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
+        else
+          (cd "$worktree_dir" && OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
+        fi
         ;;
       cursor)
-        (
-          cd "$worktree_dir"
-          agent --print --force \
-            --output-format stream-json \
-            "$prompt"
-        ) > "$tmpfile" 2>>"$log_file"
+        (cd "$worktree_dir" && agent --print --force --output-format stream-json "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
         ;;
       codex)
         (
@@ -2353,7 +2451,7 @@ Focus only on implementing: $task_name"
             --json \
             --output-last-message "$CODEX_LAST_MESSAGE_FILE" \
             "$prompt"
-        ) > "$tmpfile" 2>>"$log_file"
+        ) 2>>"$log_file" | $tee_cmd > "$tmpfile"
         ;;
       *)
         (
@@ -2362,7 +2460,7 @@ Focus only on implementing: $task_name"
             --verbose \
             -p "$prompt" \
             --output-format stream-json
-        ) > "$tmpfile" 2>>"$log_file"
+        ) 2>>"$log_file" | $tee_cmd > "$tmpfile"
         ;;
     esac
     
@@ -2371,7 +2469,7 @@ Focus only on implementing: $task_name"
     if [[ -n "$result" ]]; then
       local error_msg
       if ! error_msg=$(check_for_errors "$result"); then
-        ((retry++))
+        ((++retry))
         echo "API error: $error_msg (attempt $retry/$MAX_RETRIES)" >> "$log_file"
         sleep "$RETRY_DELAY"
         continue
@@ -2380,7 +2478,7 @@ Focus only on implementing: $task_name"
       break
     fi
     
-    ((retry++))
+    ((++retry))
     echo "Retry $retry/$MAX_RETRIES after empty response" >> "$log_file"
     sleep "$RETRY_DELAY"
   done
@@ -2449,18 +2547,22 @@ run_parallel_agent_yaml_v1() {
   local output_file="$3"
   local status_file="$4"
   local log_file="$5"
+  local stream_file="${6:-}"  # Optional: file for streaming output to display progress
   
   local task_title
   task_title=$(get_task_title_by_id_yaml_v1 "$task_id")
   
+  
   echo "setting up" > "$status_file"
   echo "Agent $agent_num starting for task: $task_id - $task_title" >> "$log_file"
+  echo "[DEBUG] AI_ENGINE=$AI_ENGINE OPENCODE_MODEL=$OPENCODE_MODEL" >> "$log_file"
   
   # Create isolated worktree
   local worktree_info
   worktree_info=$(create_agent_worktree "$task_id" "$agent_num" 2>>"$log_file")
   local worktree_dir="${worktree_info%%|*}"
   local branch_name="${worktree_info##*|}"
+  
   
   if [[ ! -d "$worktree_dir" ]]; then
     echo "failed" > "$status_file"
@@ -2493,19 +2595,38 @@ Focus only on implementing: $task_title"
   tmpfile=$(mktemp)
   local result="" success=false retry=0
   
+  # Set up tee for streaming if stream_file is provided
+  local tee_cmd="cat"
+  if [[ -n "$stream_file" ]]; then
+    tee_cmd="tee -a $stream_file"
+  fi
+  
   while [[ $retry -lt $MAX_RETRIES ]]; do
+    echo "[DEBUG] Retry $retry, running $AI_ENGINE in $worktree_dir" >> "$log_file"
+    
+    # Clear stream file on each retry
+    [[ -n "$stream_file" ]] && : > "$stream_file"
+    
     case "$AI_ENGINE" in
       opencode)
-        (cd "$worktree_dir" && OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$prompt") > "$tmpfile" 2>>"$log_file"
+        echo "[DEBUG] About to run opencode with model=$OPENCODE_MODEL" >> "$log_file"
+        if [[ -n "$OPENCODE_MODEL" ]]; then
+          echo "[DEBUG] Running: opencode run --format json --model $OPENCODE_MODEL" >> "$log_file"
+          (cd "$worktree_dir" && opencode run --format json --model "$OPENCODE_MODEL" "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
+        else
+          echo "[DEBUG] Running: opencode run --format json (no model)" >> "$log_file"
+          (cd "$worktree_dir" && opencode run --format json "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
+        fi
+        echo "[DEBUG] opencode finished, exit code: $?" >> "$log_file"
         ;;
       cursor)
-        (cd "$worktree_dir" && agent --print --force --output-format stream-json "$prompt") > "$tmpfile" 2>>"$log_file"
+        (cd "$worktree_dir" && agent --print --force --output-format stream-json "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
         ;;
       codex)
-        (cd "$worktree_dir" && codex exec --full-auto --json "$prompt") > "$tmpfile" 2>>"$log_file"
+        (cd "$worktree_dir" && codex exec --full-auto --json "$prompt") 2>>"$log_file" | $tee_cmd > "$tmpfile"
         ;;
       *)
-        (cd "$worktree_dir" && claude --dangerously-skip-permissions --verbose -p "$prompt" --output-format stream-json) > "$tmpfile" 2>>"$log_file"
+        (cd "$worktree_dir" && claude --dangerously-skip-permissions --verbose -p "$prompt" --output-format stream-json) 2>>"$log_file" | $tee_cmd > "$tmpfile"
         ;;
     esac
     
@@ -2516,11 +2637,12 @@ Focus only on implementing: $task_title"
         break
       fi
     fi
-    ((retry++))
+    ((++retry))
     sleep "$RETRY_DELAY"
   done
   
   rm -f "$tmpfile"
+  
   
   if [[ "$success" == true ]]; then
     local commit_count
@@ -2563,7 +2685,7 @@ run_parallel_tasks_yaml_v1() {
     BASE_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   fi
   export BASE_BRANCH
-  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_SOURCE PRD_FILE CREATE_PR PR_DRAFT
+  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_SOURCE PRD_FILE CREATE_PR PR_DRAFT OPENCODE_MODEL
   
   # Initialize artifacts
   init_artifacts_dir
@@ -2637,66 +2759,130 @@ run_parallel_tasks_yaml_v1() {
     
     local batch_pids=()
     local batch_ids=()
+    local batch_titles=()
+    local batch_agent_nums=()
     local status_files=()
     local output_files=()
     local log_files=()
+    local stream_files=()
     
     for task_id in "${tasks_to_start[@]}"; do
-      ((agent_num++))
-      ((iteration++))
+      ((++agent_num))
+      ((++iteration))
       
       scheduler_start_task "$task_id"
       
       local status_file=$(mktemp)
       local output_file=$(mktemp)
       local log_file=$(mktemp)
+      local stream_file=$(mktemp)
       
       status_files+=("$status_file")
       output_files+=("$output_file")
       log_files+=("$log_file")
+      stream_files+=("$stream_file")
       batch_ids+=("$task_id")
+      batch_agent_nums+=("$agent_num")
       
       local title
       title=$(get_task_title_by_id_yaml_v1 "$task_id")
+      batch_titles+=("$title")
+      
+      # Print initial line for this agent (will be updated in-place)
       printf "  ${CYAN}◉${RESET} Agent %d: %s (%s)\n" "$agent_num" "${title:0:40}" "$task_id"
       
-      (run_parallel_agent_yaml_v1 "$task_id" "$agent_num" "$output_file" "$status_file" "$log_file") &
-      batch_pids+=($!)
+      (run_parallel_agent_yaml_v1 "$task_id" "$agent_num" "$output_file" "$status_file" "$log_file" "$stream_file") &
+      local spawned_pid=$!
+      batch_pids+=("$spawned_pid")
+      
     done
     
-    # Wait for this batch with progress
+    # Wait for this batch with progress - show each agent on its own line
     local spinner_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     local spin_idx=0
     local start_time=$SECONDS
+    local num_agents=${#batch_pids[@]}
+    
+    # Print empty lines for agent status display (we'll update them in-place)
+    for ((j=0; j<num_agents; j++)); do
+      echo ""
+    done
     
     while true; do
       local all_done=true
       local done_count=0 failed_count=0
+      local running_count=0
       
-      for ((j=0; j<${#batch_pids[@]}; j++)); do
+      # Move cursor up to the first agent line
+      printf "\033[%dA" "$num_agents"
+      
+      for ((j=0; j<num_agents; j++)); do
         local status
         status=$(cat "${status_files[$j]}" 2>/dev/null || echo "waiting")
+        local pid_alive="no"
+        if kill -0 "${batch_pids[$j]}" 2>/dev/null; then
+          pid_alive="yes"
+        fi
+        
+        local agent_n="${batch_agent_nums[$j]}"
+        local title="${batch_titles[$j]}"
+        local task_id="${batch_ids[$j]}"
+        local elapsed=$((SECONDS - start_time))
+        local spinner_char="${spinner_chars:$spin_idx:1}"
+        
+        # Clear current line
+        printf "\r\033[2K"
+        
         case "$status" in
-          done) ((done_count++)) ;;
-          failed) ((failed_count++)) ;;
-          *) 
-            if kill -0 "${batch_pids[$j]}" 2>/dev/null; then
+          done)
+            ((done_count++))
+            printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} (%s) ${GREEN}done${RESET}" "$agent_n" "${title:0:35}" "$task_id"
+            ;;
+          failed)
+            ((failed_count++))
+            printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} (%s) ${RED}failed${RESET}" "$agent_n" "${title:0:35}" "$task_id"
+            ;;
+          running)
+            ((running_count++))
+            if [[ "$pid_alive" == "yes" ]]; then
               all_done=false
             fi
+            # Get current step from stream file
+            local step
+            step=$(get_agent_current_step "${stream_files[$j]}")
+            local step_color
+            step_color=$(get_step_color "$step")
+            printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %s ${DIM}[%02d:%02d]${RESET}" \
+              "$spinner_char" "$agent_n" "$step" "${title:0:30}" $((elapsed/60)) $((elapsed%60))
+            ;;
+          "setting up")
+            ((running_count++))
+            if [[ "$pid_alive" == "yes" ]]; then
+              all_done=false
+            fi
+            printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %s ${DIM}[%02d:%02d]${RESET}" \
+              "$spinner_char" "$agent_n" "${title:0:30}" $((elapsed/60)) $((elapsed%60))
+            ;;
+          *)
+            if [[ "$pid_alive" == "yes" ]]; then
+              all_done=false
+              ((running_count++))
+            fi
+            printf "  ${DIM}○${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %s" "$agent_n" "${title:0:30}"
             ;;
         esac
+        
+        # Move to next line
+        printf "\n"
       done
       
-      [[ "$all_done" == true ]] && break
+      if [[ "$all_done" == true ]]; then
+        break
+      fi
       
-      local elapsed=$((SECONDS - start_time))
-      printf "\r  ${CYAN}%s${RESET} Running: %d | Done: %d | Failed: %d | %02d:%02d " \
-        "${spinner_chars:$spin_idx:1}" "${#batch_pids[@]}" "$done_count" "$failed_count" $((elapsed/60)) $((elapsed%60))
       spin_idx=$(((spin_idx+1) % ${#spinner_chars}))
-      sleep 0.3
+      sleep 0.25
     done
-    
-    printf "\r%80s\r" ""
     
     # Wait for processes
     for pid in "${batch_pids[@]}"; do
@@ -2730,7 +2916,7 @@ run_parallel_tasks_yaml_v1() {
         fi
       fi
       
-      rm -f "${status_files[$j]}" "${output_files[$j]}" "${log_files[$j]}"
+      rm -f "${status_files[$j]}" "${output_files[$j]}" "${log_files[$j]}" "${stream_files[$j]}"
     done
     
     # Check max iterations
@@ -2840,7 +3026,7 @@ run_parallel_tasks() {
   log_info "Base branch: $BASE_BRANCH"
   
   # Export variables needed by subshell agents
-  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_SOURCE PRD_FILE CREATE_PR PR_DRAFT
+  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_SOURCE PRD_FILE CREATE_PR PR_DRAFT OPENCODE_MODEL
   
   local batch_num=0
   local completed_branches=()
@@ -2871,7 +3057,7 @@ run_parallel_tasks() {
     local total_group_tasks=${#tasks[@]}
 
     while [[ $batch_start -lt $total_group_tasks ]]; do
-      ((batch_num++))
+      ((++batch_num))
       local batch_end=$((batch_start + MAX_PARALLEL))
       [[ $batch_end -gt $total_group_tasks ]] && batch_end=$total_group_tasks
       local batch_size=$((batch_end - batch_start))
@@ -2886,24 +3072,29 @@ run_parallel_tasks() {
       # Setup arrays for this batch
       parallel_pids=()
       local batch_tasks=()
+      local batch_agent_nums=()
       local status_files=()
       local output_files=()
       local log_files=()
+      local stream_files=()
 
       # Start all agents in the batch
       for ((i = batch_start; i < batch_end; i++)); do
         local task="${tasks[$i]}"
         local agent_num=$((iteration + 1))
-        ((iteration++))
+        ((++iteration))
 
         local status_file=$(mktemp)
         local output_file=$(mktemp)
         local log_file=$(mktemp)
+        local stream_file=$(mktemp)
 
         batch_tasks+=("$task")
+        batch_agent_nums+=("$agent_num")
         status_files+=("$status_file")
         output_files+=("$output_file")
         log_files+=("$log_file")
+        stream_files+=("$stream_file")
 
         echo "waiting" > "$status_file"
 
@@ -2912,14 +3103,17 @@ run_parallel_tasks() {
 
         # Run agent in background
         (
-          run_parallel_agent "$task" "$agent_num" "$output_file" "$status_file" "$log_file"
+          run_parallel_agent "$task" "$agent_num" "$output_file" "$status_file" "$log_file" "$stream_file"
         ) &
         parallel_pids+=($!)
       done
 
-      echo ""
+      # Print empty lines for agent status display (we'll update them in-place)
+      for ((j=0; j<batch_size; j++)); do
+        echo ""
+      done
 
-      # Monitor progress with a spinner
+      # Monitor progress with a spinner - show each agent on its own line
       local spinner_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
       local spin_idx=0
       local start_time=$SECONDS
@@ -2927,55 +3121,69 @@ run_parallel_tasks() {
       while true; do
         # Check if all processes are done
         local all_done=true
-        local setting_up=0
-        local running=0
         local done_count=0
         local failed_count=0
 
+        # Move cursor up to the first agent line
+        printf "\033[%dA" "$batch_size"
+
         for ((j = 0; j < batch_size; j++)); do
           local pid="${parallel_pids[$j]}"
-          local status_file="${status_files[$j]}"
-          local status=$(cat "$status_file" 2>/dev/null || echo "waiting")
+          local status=$(cat "${status_files[$j]}" 2>/dev/null || echo "waiting")
+          local task="${batch_tasks[$j]}"
+          local agent_n="${batch_agent_nums[$j]}"
+          local elapsed=$((SECONDS - start_time))
+          local spinner_char="${spinner_chars:$spin_idx:1}"
+
+          # Clear current line
+          printf "\r\033[2K"
 
           case "$status" in
-            "setting up")
-              all_done=false
-              ((setting_up++))
-              ;;
-            running)
-              all_done=false
-              ((running++))
-              ;;
             done)
               ((done_count++))
+              printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} ${GREEN}done${RESET}" "$agent_n" "${task:0:40}"
               ;;
             failed)
               ((failed_count++))
+              printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} ${RED}failed${RESET}" "$agent_n" "${task:0:40}"
+              ;;
+            running)
+              if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+              fi
+              # Get current step from stream file
+              local step
+              step=$(get_agent_current_step "${stream_files[$j]}")
+              local step_color
+              step_color=$(get_step_color "$step")
+              printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %s ${DIM}[%02d:%02d]${RESET}" \
+                "$spinner_char" "$agent_n" "$step" "${task:0:30}" $((elapsed/60)) $((elapsed%60))
+              ;;
+            "setting up")
+              if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+              fi
+              printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %s ${DIM}[%02d:%02d]${RESET}" \
+                "$spinner_char" "$agent_n" "${task:0:30}" $((elapsed/60)) $((elapsed%60))
               ;;
             *)
               # Check if process is still running
               if kill -0 "$pid" 2>/dev/null; then
                 all_done=false
               fi
+              printf "  ${DIM}○${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %s" "$agent_n" "${task:0:30}"
               ;;
           esac
+
+          # Move to next line
+          printf "\n"
         done
 
         [[ "$all_done" == true ]] && break
 
-        # Update spinner
-        local elapsed=$((SECONDS - start_time))
-        local spin_char="${spinner_chars:$spin_idx:1}"
         spin_idx=$(( (spin_idx + 1) % ${#spinner_chars} ))
-
-        printf "\r  ${CYAN}%s${RESET} Agents: ${BLUE}%d setup${RESET} | ${YELLOW}%d running${RESET} | ${GREEN}%d done${RESET} | ${RED}%d failed${RESET} | %02d:%02d " \
-          "$spin_char" "$setting_up" "$running" "$done_count" "$failed_count" $((elapsed / 60)) $((elapsed % 60))
-
-        sleep 0.3
+        sleep 0.25
       done
-
-      # Clear the spinner line
-      printf "\r%100s\r" ""
 
       # Wait for all processes to fully complete
       for pid in "${parallel_pids[@]}"; do
@@ -3048,7 +3256,7 @@ run_parallel_tasks() {
         fi
 
         # Cleanup temp files
-        rm -f "$status_file" "$output_file" "$log_file"
+        rm -f "$status_file" "$output_file" "$log_file" "${stream_files[$j]}"
       done
 
       batch_start=$batch_end
@@ -3167,9 +3375,11 @@ Be careful to preserve functionality from BOTH branches. The goal is to integrat
           
           case "$AI_ENGINE" in
             opencode)
-              OPENCODE_PERMISSION='{"*":"allow"}' opencode run \
-                --format json \
-                "$resolve_prompt" > "$resolve_tmpfile" 2>&1
+              if [[ -n "$OPENCODE_MODEL" ]]; then
+                OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json --model "$OPENCODE_MODEL" "$resolve_prompt" > "$resolve_tmpfile" 2>&1
+              else
+                OPENCODE_PERMISSION='{"*":"allow"}' opencode run --format json "$resolve_prompt" > "$resolve_tmpfile" 2>&1
+              fi
               ;;
             cursor)
               agent --print --force \
@@ -3353,7 +3563,7 @@ main() {
 
   # Sequential main loop
   while true; do
-    ((iteration++))
+    ((++iteration))
     local result_code=0
     run_single_task "" "$iteration" || result_code=$?
     
