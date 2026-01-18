@@ -1076,7 +1076,7 @@ scheduler_get_ready() {
 scheduler_count_running() {
   local count=0
   for id in "${!SCHED_STATE[@]}"; do
-    [[ "${SCHED_STATE[$id]}" == "running" ]] && ((count++))
+    [[ "${SCHED_STATE[$id]}" == "running" ]] && count=$((count + 1))
   done
   echo "$count"
 }
@@ -1085,7 +1085,7 @@ scheduler_count_running() {
 scheduler_count_pending() {
   local count=0
   for id in "${!SCHED_STATE[@]}"; do
-    [[ "${SCHED_STATE[$id]}" == "pending" ]] && ((count++))
+    [[ "${SCHED_STATE[$id]}" == "pending" ]] && count=$((count + 1))
   done
   echo "$count"
 }
@@ -1494,7 +1494,7 @@ generate_fix_tasks() {
       \"mutex\": []
     }]" "$PRD_FILE"
     
-    ((fix_num++))
+    fix_num=$((fix_num + 1))
   done
   
   log_success "Added fix tasks"
@@ -2802,10 +2802,12 @@ run_parallel_tasks_yaml_v1() {
     local spin_idx=0
     local start_time=$SECONDS
     local num_agents=${#batch_pids[@]}
+    # Fixed width for clean line overwrite (avoids flicker from clearing)
+    local line_width=78
     
-    # Print empty lines for agent status display (we'll update them in-place)
+    # Print initial status lines for each agent
     for ((j=0; j<num_agents; j++)); do
-      echo ""
+      printf "  ${DIM}○${RESET} Agent %d: ${DIM}Initializing...${RESET}\n" "${batch_agent_nums[$j]}"
     done
     
     while true; do
@@ -2825,55 +2827,52 @@ run_parallel_tasks_yaml_v1() {
         fi
         
         local agent_n="${batch_agent_nums[$j]}"
-        local title="${batch_titles[$j]}"
-        local task_id="${batch_ids[$j]}"
+        local disp_title="${batch_titles[$j]}"
+        local disp_task_id="${batch_ids[$j]}"
         local elapsed=$((SECONDS - start_time))
         local spinner_char="${spinner_chars:$spin_idx:1}"
-        
-        # Clear current line
-        printf "\r\033[2K"
+        local line=""
         
         case "$status" in
           done)
-            ((done_count++))
-            printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} (%s) ${GREEN}done${RESET}" "$agent_n" "${title:0:35}" "$task_id"
+            done_count=$((done_count + 1))
+            line=$(printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} (%s) ${GREEN}done${RESET}" "$agent_n" "${disp_title:0:35}" "$disp_task_id")
             ;;
           failed)
-            ((failed_count++))
-            printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} (%s) ${RED}failed${RESET}" "$agent_n" "${title:0:35}" "$task_id"
+            failed_count=$((failed_count + 1))
+            line=$(printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} (%s) ${RED}failed${RESET}" "$agent_n" "${disp_title:0:35}" "$disp_task_id")
             ;;
           running)
-            ((running_count++))
+            running_count=$((running_count + 1))
             if [[ "$pid_alive" == "yes" ]]; then
               all_done=false
             fi
-            # Get current step from stream file
             local step
             step=$(get_agent_current_step "${stream_files[$j]}")
             local step_color
             step_color=$(get_step_color "$step")
-            printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %s ${DIM}[%02d:%02d]${RESET}" \
-              "$spinner_char" "$agent_n" "$step" "${title:0:30}" $((elapsed/60)) $((elapsed%60))
+            line=$(printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %-30s ${DIM}[%02d:%02d]${RESET}" \
+              "$spinner_char" "$agent_n" "$step" "${disp_title:0:30}" $((elapsed/60)) $((elapsed%60)))
             ;;
           "setting up")
-            ((running_count++))
+            running_count=$((running_count + 1))
             if [[ "$pid_alive" == "yes" ]]; then
               all_done=false
             fi
-            printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %s ${DIM}[%02d:%02d]${RESET}" \
-              "$spinner_char" "$agent_n" "${title:0:30}" $((elapsed/60)) $((elapsed%60))
+            line=$(printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %-30s ${DIM}[%02d:%02d]${RESET}" \
+              "$spinner_char" "$agent_n" "${disp_title:0:30}" $((elapsed/60)) $((elapsed%60)))
             ;;
           *)
             if [[ "$pid_alive" == "yes" ]]; then
               all_done=false
-              ((running_count++))
+              running_count=$((running_count + 1))
             fi
-            printf "  ${DIM}○${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %s" "$agent_n" "${title:0:30}"
+            line=$(printf "  ${DIM}%s${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %-30s" "$spinner_char" "$agent_n" "${disp_title:0:30}")
             ;;
         esac
         
-        # Move to next line
-        printf "\n"
+        # Print line with padding to overwrite any previous content (no flicker)
+        printf "\r%-${line_width}s\n" "$line"
       done
       
       if [[ "$all_done" == true ]]; then
@@ -2881,7 +2880,7 @@ run_parallel_tasks_yaml_v1() {
       fi
       
       spin_idx=$(((spin_idx+1) % ${#spinner_chars}))
-      sleep 0.25
+      sleep 0.3
     done
     
     # Wait for processes
@@ -3108,10 +3107,13 @@ run_parallel_tasks() {
         parallel_pids+=($!)
       done
 
-      # Print empty lines for agent status display (we'll update them in-place)
+      # Print initial status lines for each agent
       for ((j=0; j<batch_size; j++)); do
-        echo ""
+        printf "  ${DIM}○${RESET} Agent %d: ${DIM}Initializing...${RESET}\n" "${batch_agent_nums[$j]}"
       done
+      
+      # Fixed width for clean line overwrite (avoids flicker)
+      local line_width=78
 
       # Monitor progress with a spinner - show each agent on its own line
       local spinner_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -3134,55 +3136,51 @@ run_parallel_tasks() {
           local agent_n="${batch_agent_nums[$j]}"
           local elapsed=$((SECONDS - start_time))
           local spinner_char="${spinner_chars:$spin_idx:1}"
-
-          # Clear current line
-          printf "\r\033[2K"
+          local line=""
 
           case "$status" in
             done)
-              ((done_count++))
-              printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} ${GREEN}done${RESET}" "$agent_n" "${task:0:40}"
+              done_count=$((done_count + 1))
+              line=$(printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} ${GREEN}done${RESET}" "$agent_n" "${task:0:40}")
               ;;
             failed)
-              ((failed_count++))
-              printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} ${RED}failed${RESET}" "$agent_n" "${task:0:40}"
+              failed_count=$((failed_count + 1))
+              line=$(printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} ${RED}failed${RESET}" "$agent_n" "${task:0:40}")
               ;;
             running)
               if kill -0 "$pid" 2>/dev/null; then
                 all_done=false
               fi
-              # Get current step from stream file
               local step
               step=$(get_agent_current_step "${stream_files[$j]}")
               local step_color
               step_color=$(get_step_color "$step")
-              printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %s ${DIM}[%02d:%02d]${RESET}" \
-                "$spinner_char" "$agent_n" "$step" "${task:0:30}" $((elapsed/60)) $((elapsed%60))
+              line=$(printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %-30s ${DIM}[%02d:%02d]${RESET}" \
+                "$spinner_char" "$agent_n" "$step" "${task:0:30}" $((elapsed/60)) $((elapsed%60)))
               ;;
             "setting up")
               if kill -0 "$pid" 2>/dev/null; then
                 all_done=false
               fi
-              printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %s ${DIM}[%02d:%02d]${RESET}" \
-                "$spinner_char" "$agent_n" "${task:0:30}" $((elapsed/60)) $((elapsed%60))
+              line=$(printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %-30s ${DIM}[%02d:%02d]${RESET}" \
+                "$spinner_char" "$agent_n" "${task:0:30}" $((elapsed/60)) $((elapsed%60)))
               ;;
             *)
-              # Check if process is still running
               if kill -0 "$pid" 2>/dev/null; then
                 all_done=false
               fi
-              printf "  ${DIM}○${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %s" "$agent_n" "${task:0:30}"
+              line=$(printf "  ${DIM}%s${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %-30s" "$spinner_char" "$agent_n" "${task:0:30}")
               ;;
           esac
 
-          # Move to next line
-          printf "\n"
+          # Print line with padding to overwrite previous content (no flicker)
+          printf "\r%-${line_width}s\n" "$line"
         done
 
         [[ "$all_done" == true ]] && break
 
         spin_idx=$(( (spin_idx + 1) % ${#spinner_chars} ))
-        sleep 0.25
+        sleep 0.3
       done
 
       # Wait for all processes to fully complete
