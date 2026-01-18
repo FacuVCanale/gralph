@@ -91,3 +91,4 @@ This file contains learnings, patterns, and conventions discovered during Ralph'
 - Branch naming conventions
 - Commit message format
 - Pull request templates
+- Do not modify the `examples/` folder
