@@ -10,11 +10,11 @@ if ! command -v yq &>/dev/null; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RALPH_DIR="$(dirname "$SCRIPT_DIR")"
+RALPH_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/scripts/gralph"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Source gralph.sh functions (without running main)
+# Source scripts/gralph/gralph.sh functions (without running main)
 source_ralph() {
   # Extract just the functions we need
   cd "$TMPDIR"

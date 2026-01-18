@@ -38,7 +38,7 @@ MAX_PARALLEL=3
 
 # PRD source options
 PRD_SOURCE="markdown"  # markdown, yaml, github
-PRD_FILE="PRD.md"
+PRD_FILE="scripts/gralph/prompt.md"
 GITHUB_REPO=""
 GITHUB_LABEL=""
 
@@ -436,7 +436,7 @@ show_help() {
 ${BOLD}GRALPH${RESET} - Autonomous AI Coding Loop (v${VERSION})
 
 ${BOLD}USAGE:${RESET}
-  ./gralph.sh [options]
+  ./scripts/gralph/gralph.sh [options]
 
 ${BOLD}AI ENGINE OPTIONS:${RESET}
   --claude            Use Claude Code (default)
@@ -481,15 +481,15 @@ ${BOLD}OTHER OPTIONS:${RESET}
   --version           Show version number
 
 ${BOLD}EXAMPLES:${RESET}
-  ./gralph.sh                              # Run with Claude Code
-  ./gralph.sh --codex                      # Run with Codex CLI
-  ./gralph.sh --opencode                   # Run with OpenCode
-  ./gralph.sh --opencode --opencode-model openai/gpt-4o  # OpenCode with specific model
-  ./gralph.sh --cursor                     # Run with Cursor agent
-  ./gralph.sh --branch-per-task --create-pr  # Feature branch workflow
-  ./gralph.sh --parallel --max-parallel 4  # Run 4 tasks concurrently
-  ./gralph.sh --yaml tasks.yaml            # Use YAML task file
-  ./gralph.sh --github owner/repo          # Fetch from GitHub issues
+  ./scripts/gralph/gralph.sh                              # Run with Claude Code
+  ./scripts/gralph/gralph.sh --codex                      # Run with Codex CLI
+  ./scripts/gralph/gralph.sh --opencode                   # Run with OpenCode
+  ./scripts/gralph/gralph.sh --opencode --opencode-model openai/gpt-4o  # OpenCode with specific model
+  ./scripts/gralph/gralph.sh --cursor                     # Run with Cursor agent
+  ./scripts/gralph/gralph.sh --branch-per-task --create-pr  # Feature branch workflow
+  ./scripts/gralph/gralph.sh --parallel --max-parallel 4  # Run 4 tasks concurrently
+  ./scripts/gralph/gralph.sh --yaml tasks.yaml            # Use YAML task file
+  ./scripts/gralph/gralph.sh --github owner/repo          # Fetch from GitHub issues
 
 ${BOLD}PRD FORMATS:${RESET}
   Markdown (PRD.md):
@@ -608,7 +608,7 @@ parse_args() {
         shift
         ;;
       --prd)
-        PRD_FILE="${2:-PRD.md}"
+        PRD_FILE="${2:-scripts/gralph/prompt.md}"
         PRD_SOURCE="markdown"
         shift 2
         ;;
@@ -747,10 +747,10 @@ check_requirements() {
   fi
 
   # Create progress.txt if missing
-  if [[ ! -f "progress.txt" ]]; then
-    log_warn "progress.txt not found, creating it..."
-    touch progress.txt
-  fi
+if [[ ! -f "scripts/gralph/progress.txt" ]]; then
+  log_warn "progress.txt not found, creating it..."
+  touch scripts/gralph/progress.txt
+fi
 
   # Set base branch if not specified
   if [[ "$BRANCH_PER_TASK" == true ]] && [[ -z "$BASE_BRANCH" ]]; then
@@ -1902,10 +1902,10 @@ build_prompt() {
   # Add context based on PRD source
   case "$PRD_SOURCE" in
     markdown)
-      prompt="@${PRD_FILE} @progress.txt"
+      prompt="@${PRD_FILE} @scripts/gralph/progress.txt"
       ;;
     yaml)
-      prompt="@${PRD_FILE} @progress.txt"
+      prompt="@${PRD_FILE} @scripts/gralph/progress.txt"
       ;;
     github)
       # For GitHub issues, we include the issue body
@@ -1918,7 +1918,7 @@ build_prompt() {
 Issue Description:
 $issue_body
 
-@progress.txt"
+@scripts/gralph/progress.txt"
       ;;
   esac
   
@@ -2506,7 +2506,7 @@ run_parallel_agent() {
   fi
   
   # Ensure progress.txt exists in worktree
-  touch "$worktree_dir/progress.txt"
+  touch "$worktree_dir/scripts/gralph/progress.txt"
   
   # Build prompt for this specific task
   local prompt="You are working on a specific task. Focus ONLY on this task:
@@ -2606,21 +2606,12 @@ Focus only on implementing: $task_name"
       local changed_files
       changed_files=$(git -C "$worktree_dir" diff --name-only "$BASE_BRANCH"..HEAD 2>/dev/null | tr '\n' ',' | sed 's/,$//')
       
-      # Read progress notes from worktree
-      local progress_notes=""
-      if [[ -f "$worktree_dir/progress.txt" ]]; then
-        progress_notes=$(cat "$worktree_dir/progress.txt" 2>/dev/null | tail -50)
-      fi
-      
-      local task_id_slug
-      task_id_slug=$(echo "$task_name" | sed 's/[^a-zA-Z0-9]/-/g' | cut -c1-30)
-      
-      # Escape strings for valid JSON
-      local safe_title safe_branch safe_changed safe_notes
-      safe_title=$(json_escape "$task_name")
-      safe_branch=$(json_escape "$branch_name")
-      safe_changed=$(json_escape "$changed_files")
-      safe_notes=$(json_escape "$progress_notes")
+# Read progress notes from worktree
+  local progress_notes=""
+  if [[ -f "$worktree_dir/scripts/gralph/progress.txt" ]]; then
+    progress_notes=$(cat "$worktree_dir/scripts/gralph/progress.txt" 2>/dev/null | tail -50)
+  fi
+  safe_notes=$(json_escape "$progress_notes")
       
       mkdir -p "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports"
       cat > "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports/agent-${agent_num}-${task_id_slug}.json" << EOF
@@ -2636,12 +2627,12 @@ Focus only on implementing: $task_name"
 }
 EOF
       
-      # Append to main progress.txt
-      if [[ -f "$worktree_dir/progress.txt" ]] && [[ -s "$worktree_dir/progress.txt" ]]; then
-        echo "" >> "$ORIGINAL_DIR/progress.txt"
-        echo "### Agent $agent_num - $task_name ($(date +%Y-%m-%d))" >> "$ORIGINAL_DIR/progress.txt"
-        tail -20 "$worktree_dir/progress.txt" >> "$ORIGINAL_DIR/progress.txt"
-      fi
+# Append to main progress.txt
+    if [[ -f "$worktree_dir/progress.txt" ]] && [[ -s "$worktree_dir/progress.txt" ]]; then
+      echo "" >> "$ORIGINAL_DIR/scripts/gralph/progress.txt"
+      echo "### Agent $agent_num - $task_name ($(date +%Y-%m-%d))" >> "$ORIGINAL_DIR/scripts/gralph/progress.txt"
+      tail -20 "$worktree_dir/progress.txt" >> "$ORIGINAL_DIR/scripts/gralph/progress.txt"
+    fi
     fi
     
     # Write success output
@@ -2694,7 +2685,7 @@ run_parallel_agent_yaml_v1() {
   
   # Copy PRD file
   cp "$ORIGINAL_DIR/$PRD_FILE" "$worktree_dir/" 2>/dev/null || true
-  touch "$worktree_dir/progress.txt"
+  touch "$worktree_dir/scripts/gralph/progress.txt"
   
   # Build prompt for this task
   local prompt="You are working on a specific task. Focus ONLY on this task:
@@ -2761,18 +2752,12 @@ Focus only on implementing: $task_title"
       local changed_files
       changed_files=$(git -C "$worktree_dir" diff --name-only "$BASE_BRANCH"..HEAD 2>/dev/null | tr '\n' ',' | sed 's/,$//')
       
-      # Read progress notes from worktree
-      local progress_notes=""
-      if [[ -f "$worktree_dir/progress.txt" ]]; then
-        progress_notes=$(cat "$worktree_dir/progress.txt" 2>/dev/null | tail -50)
-      fi
-      
-      # Escape strings for valid JSON
-      local safe_title safe_branch safe_changed safe_notes
-      safe_title=$(json_escape "$task_title")
-      safe_branch=$(json_escape "$branch_name")
-      safe_changed=$(json_escape "$changed_files")
-      safe_notes=$(json_escape "$progress_notes")
+# Read progress notes from worktree
+  local progress_notes=""
+  if [[ -f "$worktree_dir/scripts/gralph/progress.txt" ]]; then
+    progress_notes=$(cat "$worktree_dir/scripts/gralph/progress.txt" 2>/dev/null | tail -50)
+  fi
+  safe_notes=$(json_escape "$progress_notes")
       
       mkdir -p "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports"
       cat > "$ORIGINAL_DIR/$ARTIFACTS_DIR/reports/$task_id.json" << EOF
@@ -2788,12 +2773,12 @@ Focus only on implementing: $task_title"
 }
 EOF
       
-      # Append to main progress.txt
-      if [[ -f "$worktree_dir/progress.txt" ]] && [[ -s "$worktree_dir/progress.txt" ]]; then
-        echo "" >> "$ORIGINAL_DIR/progress.txt"
-        echo "### $task_id - $task_title ($(date +%Y-%m-%d))" >> "$ORIGINAL_DIR/progress.txt"
-        tail -20 "$worktree_dir/progress.txt" >> "$ORIGINAL_DIR/progress.txt"
-      fi
+# Append to main progress.txt
+  if [[ -f "$worktree_dir/progress.txt" ]] && [[ -s "$worktree_dir/progress.txt" ]]; then
+    echo "" >> "$ORIGINAL_DIR/scripts/gralph/progress.txt"
+    echo "### $task_id - $task_title ($(date +%Y-%m-%d))" >> "$ORIGINAL_DIR/scripts/gralph/progress.txt"
+    tail -20 "$worktree_dir/progress.txt" >> "$ORIGINAL_DIR/scripts/gralph/progress.txt"
+  fi
     fi
     
     echo "done" > "$status_file"

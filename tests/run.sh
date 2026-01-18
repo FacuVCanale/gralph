@@ -36,7 +36,7 @@ run_test() {
   fi
 }
 
-echo "Running GRALPH tests..."
+echo "Running gralph tests..."
 echo ""
 
 for test_file in "$SCRIPT_DIR"/*.test.sh; do
