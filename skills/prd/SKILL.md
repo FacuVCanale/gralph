@@ -168,6 +168,7 @@ The PRD reader may be a junior developer or AI agent. Therefore:
 - **Format:** Markdown (`.md`)
 - **Location:** `tasks/`
 - **Filename:** `prd-[feature-name].md` (kebab-case)
+- **Include:** Always add a line `prd-id: <feature-name-kebab-case>` at the top of the PRD (after the # title)
 
 ---
 
@@ -175,6 +176,8 @@ The PRD reader may be a junior developer or AI agent. Therefore:
 
 ```markdown
 # PRD: Task Priority System
+
+prd-id: task-priority-system
 
 ## Introduction
 

@@ -12,7 +12,7 @@ set -euo pipefail
 # CONFIGURATION & DEFAULTS
 # ============================================
 
-VERSION="3.1.0"
+VERSION="3.2.0"
 
 # Runtime options
 SKIP_TESTS=false
@@ -31,16 +31,18 @@ BRANCH_PER_TASK=false
 CREATE_PR=false
 BASE_BRANCH=""
 PR_DRAFT=false
+RUN_BRANCH=""
 
-# Parallel execution
-PARALLEL=false
+# Parallel execution (default: parallel)
+PARALLEL=true
+SEQUENTIAL=false
 MAX_PARALLEL=3
 
-# PRD source options
-PRD_SOURCE="markdown"  # markdown, yaml, github
+# PRD options
 PRD_FILE="PRD.md"
-GITHUB_REPO=""
-GITHUB_LABEL=""
+PRD_ID=""
+PRD_RUN_DIR=""
+RESUME_PRD_ID=""
 
 # Skills init options
 SKILLS_INIT=false
@@ -114,6 +116,20 @@ log_debug() {
 # Slugify text for branch names
 slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g' | sed -E 's/^-|-$//g' | cut -c1-50
+}
+
+# Extract prd-id from PRD file
+extract_prd_id() {
+  local prd_file=$1
+  grep -m1 '^prd-id:' "$prd_file" 2>/dev/null | sed 's/^prd-id:[[:space:]]*//' | tr -d '\r'
+}
+
+# Setup PRD run directory
+setup_prd_run_dir() {
+  local prd_id=$1
+  PRD_RUN_DIR="artifacts/prd/$prd_id"
+  mkdir -p "$PRD_RUN_DIR/reports"
+  ARTIFACTS_DIR="$PRD_RUN_DIR"
 }
 
 # Escape string for safe JSON inclusion
@@ -451,15 +467,13 @@ ${BOLD}WORKFLOW OPTIONS:${RESET}
   --fast              Skip both tests and linting
 
 ${BOLD}EXECUTION OPTIONS:${RESET}
+  --sequential        Run tasks one at a time (default: parallel)
+  --max-parallel N    Max concurrent tasks (default: 3)
   --max-iterations N  Stop after N iterations (0 = unlimited)
   --max-retries N     Max retries per task on failure (default: 3)
   --retry-delay N     Seconds between retries (default: 5)
   --external-fail-timeout N  Seconds to wait for running tasks on external failure (default: 300)
   --dry-run           Show what would be done without executing
-
-${BOLD}PARALLEL EXECUTION:${RESET}
-  --parallel          Run independent tasks in parallel
-  --max-parallel N    Max concurrent tasks (default: 3)
 
 ${BOLD}GIT BRANCH OPTIONS:${RESET}
   --branch-per-task   Create a new git branch for each task
@@ -467,11 +481,9 @@ ${BOLD}GIT BRANCH OPTIONS:${RESET}
   --create-pr         Create a pull request after each task (requires gh CLI)
   --draft-pr          Create PRs as drafts
 
-${BOLD}PRD SOURCE OPTIONS:${RESET}
+${BOLD}PRD OPTIONS:${RESET}
   --prd FILE          PRD file path (default: PRD.md)
-  --yaml FILE         Use YAML task file instead of markdown
-  --github REPO       Fetch tasks from GitHub issues (e.g., owner/repo)
-  --github-label TAG  Filter GitHub issues by label
+  --resume PRD-ID     Resume a previous run by prd-id
 
 ${BOLD}OTHER OPTIONS:${RESET}
   --init              Install missing skills for the current AI engine and exit
@@ -481,28 +493,23 @@ ${BOLD}OTHER OPTIONS:${RESET}
   --version           Show version number
 
 ${BOLD}EXAMPLES:${RESET}
-  ./scripts/gralph/gralph.sh                              # Run with Claude Code
-  ./scripts/gralph/gralph.sh --codex                      # Run with Codex CLI
-  ./scripts/gralph/gralph.sh --opencode                   # Run with OpenCode
-  ./scripts/gralph/gralph.sh --opencode --opencode-model openai/gpt-4o  # OpenCode with specific model
-  ./scripts/gralph/gralph.sh --cursor                     # Run with Cursor agent
-  ./scripts/gralph/gralph.sh --branch-per-task --create-pr  # Feature branch workflow
-  ./scripts/gralph/gralph.sh --parallel --max-parallel 4  # Run 4 tasks concurrently
-  ./scripts/gralph/gralph.sh --yaml tasks.yaml            # Use YAML task file
-  ./scripts/gralph/gralph.sh --github owner/repo          # Fetch from GitHub issues
+  ./scripts/gralph/gralph.sh --opencode             # Run with OpenCode (parallel by default)
+  ./scripts/gralph/gralph.sh --opencode --sequential  # Run sequentially
+  ./scripts/gralph/gralph.sh --opencode --max-parallel 4  # Run 4 tasks concurrently
+  ./scripts/gralph/gralph.sh --resume my-feature    # Resume previous run
 
-${BOLD}PRD FORMATS:${RESET}
-  Markdown (PRD.md):
-    - [ ] Task description
+${BOLD}WORKFLOW:${RESET}
+  1. Create PRD.md with prd-id line (use /prd skill)
+  2. Run gralph: ./scripts/gralph/gralph.sh --opencode
+  3. GRALPH creates artifacts/prd/<prd-id>/ with tasks.yaml
+  4. Tasks run in parallel using DAG scheduler
+  5. Resume anytime with --resume <prd-id>
 
-  YAML (tasks.yaml):
-    tasks:
-      - title: Task description
-        completed: false
-        parallel_group: 1  # Optional: tasks with same group run in parallel
+${BOLD}PRD FORMAT:${RESET}
+  PRD.md must include a prd-id line:
+    prd-id: my-feature-name
 
-  GitHub Issues:
-    Uses open issues from the specified repository
+  GRALPH generates tasks.yaml automatically from PRD.md
 
 EOF
 }
@@ -585,6 +592,12 @@ parse_args() {
         ;;
       --parallel)
         PARALLEL=true
+        SEQUENTIAL=false
+        shift
+        ;;
+      --sequential)
+        SEQUENTIAL=true
+        PARALLEL=false
         shift
         ;;
       --max-parallel)
@@ -609,21 +622,14 @@ parse_args() {
         ;;
       --prd)
         PRD_FILE="${2:-PRD.md}"
-        PRD_SOURCE="markdown"
         shift 2
         ;;
-      --yaml)
-        PRD_FILE="${2:-tasks.yaml}"
-        PRD_SOURCE="yaml"
-        shift 2
-        ;;
-      --github)
-        GITHUB_REPO="${2:-}"
-        PRD_SOURCE="github"
-        shift 2
-        ;;
-      --github-label)
-        GITHUB_LABEL="${2:-}"
+      --resume)
+        RESUME_PRD_ID="${2:-}"
+        if [[ -z "$RESUME_PRD_ID" ]]; then
+          log_error "--resume requires a prd-id"
+          exit 1
+        fi
         shift 2
         ;;
       -v|--verbose)
@@ -654,53 +660,62 @@ parse_args() {
 check_requirements() {
   local missing=()
 
-  # Check for PRD source
-  case "$PRD_SOURCE" in
-    markdown)
-      if [[ ! -f "$PRD_FILE" ]]; then
-        log_error "$PRD_FILE not found in current directory"
+  if ! command -v yq &>/dev/null; then
+    log_error "yq is required for YAML parsing. Install from https://github.com/mikefarah/yq"
+    exit 1
+  fi
+
+  # Handle --resume mode
+  if [[ -n "$RESUME_PRD_ID" ]]; then
+    PRD_ID="$RESUME_PRD_ID"
+    PRD_RUN_DIR="artifacts/prd/$PRD_ID"
+    if [[ ! -d "$PRD_RUN_DIR" ]]; then
+      log_error "No run found for prd-id: $PRD_ID"
+      exit 1
+    fi
+    if [[ ! -f "$PRD_RUN_DIR/tasks.yaml" ]]; then
+      log_error "No tasks.yaml found in $PRD_RUN_DIR"
+      exit 1
+    fi
+    PRD_FILE="$PRD_RUN_DIR/tasks.yaml"
+    ARTIFACTS_DIR="$PRD_RUN_DIR"
+    log_info "Resuming PRD: $PRD_ID"
+  else
+    # Normal mode: read PRD and setup run dir
+    if [[ ! -f "$PRD_FILE" ]]; then
+      log_error "$PRD_FILE not found"
+      exit 1
+    fi
+    
+    PRD_ID=$(extract_prd_id "$PRD_FILE")
+    if [[ -z "$PRD_ID" ]]; then
+      log_error "PRD missing prd-id. Add 'prd-id: your-id' to the PRD file."
+      exit 1
+    fi
+    
+    setup_prd_run_dir "$PRD_ID"
+    
+    # Copy PRD to run dir
+    cp "$PRD_FILE" "$PRD_RUN_DIR/PRD.md"
+    
+    # Generate or reuse tasks.yaml
+    if [[ -f "$PRD_RUN_DIR/tasks.yaml" ]]; then
+      log_info "Resuming existing run for $PRD_ID"
+    else
+      log_info "Generating tasks.yaml for $PRD_ID..."
+      if ! run_metadata_agent "$PRD_RUN_DIR/PRD.md" "$PRD_RUN_DIR/tasks.yaml"; then
+        log_error "Failed to generate tasks.yaml"
         exit 1
       fi
-      ;;
-    yaml)
-      if ! command -v yq &>/dev/null; then
-        log_error "yq is required for YAML parsing. Install from https://github.com/mikefarah/yq"
-        exit 1
-      fi
-      
-      # Auto-generate tasks.yaml from PRD if it doesn't exist
-      if [[ ! -f "$PRD_FILE" ]]; then
-        local prd_file
-        if prd_file=$(find_prd_file); then
-          log_info "Found $prd_file, generating tasks.yaml..."
-          if ! run_metadata_agent "$prd_file"; then
-            log_error "Failed to generate tasks.yaml from PRD"
-            exit 1
-          fi
-        else
-          log_error "$PRD_FILE not found and no PRD.md to convert"
-          exit 1
-        fi
-      fi
-      
-      # Validate v1 schema if version: 1
-      if is_yaml_v1; then
-        if ! validate_tasks_yaml_v1; then
-          exit 1
-        fi
-      fi
-      ;;
-    github)
-      if [[ -z "$GITHUB_REPO" ]]; then
-        log_error "GitHub repository not specified. Use --github owner/repo"
-        exit 1
-      fi
-      if ! command -v gh &>/dev/null; then
-        log_error "GitHub CLI (gh) is required. Install from https://cli.github.com/"
-        exit 1
-      fi
-      ;;
-  esac
+    fi
+    
+    PRD_FILE="$PRD_RUN_DIR/tasks.yaml"
+  fi
+
+  # Validate tasks.yaml
+  if ! validate_tasks_yaml_v1; then
+    exit 1
+  fi
 
   # Check for AI CLI
   case "$AI_ENGINE" in
@@ -817,37 +832,6 @@ cleanup() {
 }
 
 # ============================================
-# TASK SOURCES - MARKDOWN
-# ============================================
-
-get_tasks_markdown() {
-  grep '^\- \[ \]' "$PRD_FILE" 2>/dev/null | sed 's/^- \[ \] //' || true
-}
-
-get_next_task_markdown() {
-  grep -m1 '^\- \[ \]' "$PRD_FILE" 2>/dev/null | sed 's/^- \[ \] //' | cut -c1-50 || echo ""
-}
-
-count_remaining_markdown() {
-  grep -c '^\- \[ \]' "$PRD_FILE" 2>/dev/null || echo "0"
-}
-
-count_completed_markdown() {
-  grep -c '^\- \[x\]' "$PRD_FILE" 2>/dev/null || echo "0"
-}
-
-mark_task_complete_markdown() {
-  local task=$1
-  # For macOS sed (BRE), we need to:
-  # - Escape: [ ] \ . * ^ $ /
-  # - NOT escape: { } ( ) + ? | (these are literal in BRE)
-  local escaped_task
-  escaped_task=$(printf '%s\n' "$task" | sed 's/[[\.*^$/]/\\&/g')
-  sed -i.bak "s/^- \[ \] ${escaped_task}/- [x] ${escaped_task}/" "$PRD_FILE"
-  rm -f "${PRD_FILE}.bak"
-}
-
-# ============================================
 # TASK SOURCES - YAML
 # ============================================
 
@@ -872,16 +856,6 @@ mark_task_complete_yaml() {
   yq -i "(.tasks[] | select(.title == \"$task\")).completed = true" "$PRD_FILE"
 }
 
-get_parallel_group_yaml() {
-  local task=$1
-  yq -r ".tasks[] | select(.title == \"$task\") | .parallel_group // 0" "$PRD_FILE" 2>/dev/null || echo "0"
-}
-
-get_tasks_in_group_yaml() {
-  local group=$1
-  yq -r ".tasks[] | select(.completed != true and (.parallel_group // 0) == $group) | .title" "$PRD_FILE" 2>/dev/null || true
-}
-
 # ============================================
 # YAML V1 VALIDATION (DAG + MUTEX)
 # ============================================
@@ -889,8 +863,18 @@ get_tasks_in_group_yaml() {
 # Check if tasks.yaml uses v1 format
 is_yaml_v1() {
   local version
-  version=$(yq -r '.version // 0' "$PRD_FILE" 2>/dev/null)
-  [[ "$version" == "1" ]]
+  version=$(yq -r '.version // ""' "$PRD_FILE" 2>/dev/null)
+  if [[ "$version" == "1" ]]; then
+    return 0
+  fi
+  if [[ -n "$version" && "$version" != "1" ]]; then
+    return 1
+  fi
+
+  # No version set: infer v1 if tasks contain ids
+  local has_id
+  has_id=$(yq -r '.tasks[]?.id // empty' "$PRD_FILE" 2>/dev/null | head -1)
+  [[ -n "$has_id" ]]
 }
 
 # Get task ID by index
@@ -976,11 +960,11 @@ is_valid_mutex() {
 validate_tasks_yaml_v1() {
   local errors=()
   
-  # Check version
+  # Check version (optional)
   local version
-  version=$(yq -r '.version // "missing"' "$PRD_FILE" 2>/dev/null)
-  if [[ "$version" != "1" ]]; then
-    errors+=("version must be 1 (got: $version)")
+  version=$(yq -r '.version // ""' "$PRD_FILE" 2>/dev/null)
+  if [[ -n "$version" && "$version" != "1" ]]; then
+    errors+=("version must be 1 if specified (got: $version)")
   fi
   
   # Load mutex catalog
@@ -1048,14 +1032,14 @@ validate_tasks_yaml_v1() {
   
   # Report errors
   if [[ ${#errors[@]} -gt 0 ]]; then
-    log_error "tasks.yaml v1 validation failed:"
+  log_error "tasks.yaml validation failed:"
     for err in "${errors[@]}"; do
       echo "  - $err" >&2
     done
     return 1
   fi
   
-  log_success "tasks.yaml v1 valid (${#all_ids[@]} tasks)"
+  log_success "tasks.yaml valid (${#all_ids[@]} tasks)"
   return 0
 }
 
@@ -1336,17 +1320,19 @@ find_prd_file() {
 
 run_metadata_agent() {
   local prd_file=$1
-  local output_file="tasks.yaml"
+  local output_file="${2:-tasks.yaml}"
+  local output_dir
+  output_dir=$(dirname "$output_file")
   
-  log_info "Generating tasks.yaml from $prd_file..."
+  log_info "Generating $output_file from $prd_file..."
   
-  local prompt="Read the PRD file and convert it to tasks.yaml v1 format.
+  local prompt="Read the PRD file and convert it to tasks.yaml format.
 
 @$prd_file
 
 Create a tasks.yaml file with this EXACT format:
 
-version: 1
+branchName: gralph/your-feature-name
 tasks:
   - id: TASK-001
     title: \"First task description\"
@@ -1364,9 +1350,10 @@ Rules:
 2. Order tasks by dependency (database first, then backend, then frontend)
 3. Use dependsOn to link tasks that must run after others
 4. Use mutex for shared resources: db-migrations, lockfile, router, global-config
-5. Keep tasks small and focused (completable in one session)
+5. Set branchName to a short kebab-case feature name prefixed with \"gralph/\" (based on the PRD)
+6. Keep tasks small and focused (completable in one session)
 
-Save the file as tasks.yaml in the current directory.
+Save the file as $output_file.
 Do NOT implement anything - only create the tasks.yaml file."
 
   local tmpfile
@@ -1377,11 +1364,11 @@ Do NOT implement anything - only create the tasks.yaml file."
   rm -f "$tmpfile"
   
   if [[ ! -f "$output_file" ]]; then
-    log_error "Metadata agent failed to create tasks.yaml"
+    log_error "Metadata agent failed to create $output_file"
     return 1
   fi
   
-  log_success "Generated tasks.yaml"
+  log_success "Generated $output_file"
   return 0
 }
 
@@ -1589,102 +1576,43 @@ generate_fix_tasks() {
 }
 
 # ============================================
-# TASK SOURCES - GITHUB ISSUES
-# ============================================
-
-get_tasks_github() {
-  local args=(--repo "$GITHUB_REPO" --state open --json number,title)
-  [[ -n "$GITHUB_LABEL" ]] && args+=(--label "$GITHUB_LABEL")
-
-  gh issue list "${args[@]}" \
-    --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
-}
-
-get_next_task_github() {
-  local args=(--repo "$GITHUB_REPO" --state open --limit 1 --json number,title)
-  [[ -n "$GITHUB_LABEL" ]] && args+=(--label "$GITHUB_LABEL")
-
-  gh issue list "${args[@]}" \
-    --jq '.[0] | "\(.number):\(.title)"' 2>/dev/null | cut -c1-50 || echo ""
-}
-
-count_remaining_github() {
-  local args=(--repo "$GITHUB_REPO" --state open --json number)
-  [[ -n "$GITHUB_LABEL" ]] && args+=(--label "$GITHUB_LABEL")
-
-  gh issue list "${args[@]}" \
-    --jq 'length' 2>/dev/null || echo "0"
-}
-
-count_completed_github() {
-  local args=(--repo "$GITHUB_REPO" --state closed --json number)
-  [[ -n "$GITHUB_LABEL" ]] && args+=(--label "$GITHUB_LABEL")
-
-  gh issue list "${args[@]}" \
-    --jq 'length' 2>/dev/null || echo "0"
-}
-
-mark_task_complete_github() {
-  local task=$1
-  # Extract issue number from "number:title" format
-  local issue_num="${task%%:*}"
-  gh issue close "$issue_num" --repo "$GITHUB_REPO" 2>/dev/null || true
-}
-
-get_github_issue_body() {
-  local task=$1
-  local issue_num="${task%%:*}"
-  gh issue view "$issue_num" --repo "$GITHUB_REPO" --json body --jq '.body' 2>/dev/null || echo ""
-}
-
-# ============================================
-# UNIFIED TASK INTERFACE
-# ============================================
-
-get_next_task() {
-  case "$PRD_SOURCE" in
-    markdown) get_next_task_markdown ;;
-    yaml) get_next_task_yaml ;;
-    github) get_next_task_github ;;
-  esac
-}
-
-get_all_tasks() {
-  case "$PRD_SOURCE" in
-    markdown) get_tasks_markdown ;;
-    yaml) get_tasks_yaml ;;
-    github) get_tasks_github ;;
-  esac
-}
-
-count_remaining_tasks() {
-  case "$PRD_SOURCE" in
-    markdown) count_remaining_markdown ;;
-    yaml) count_remaining_yaml ;;
-    github) count_remaining_github ;;
-  esac
-}
-
-count_completed_tasks() {
-  case "$PRD_SOURCE" in
-    markdown) count_completed_markdown ;;
-    yaml) count_completed_yaml ;;
-    github) count_completed_github ;;
-  esac
-}
-
-mark_task_complete() {
-  local task=$1
-  case "$PRD_SOURCE" in
-    markdown) mark_task_complete_markdown "$task" ;;
-    yaml) mark_task_complete_yaml "$task" ;;
-    github) mark_task_complete_github "$task" ;;
-  esac
-}
-
-# ============================================
 # GIT BRANCH MANAGEMENT
 # ============================================
+
+get_run_branch_from_tasks_yaml() {
+  local name
+  name=$(yq -r '.branchName // ""' "$PRD_FILE" 2>/dev/null || echo "")
+  [[ "$name" == "null" ]] && name=""
+  echo "$name"
+}
+
+ensure_run_branch() {
+  RUN_BRANCH=$(get_run_branch_from_tasks_yaml)
+  [[ -z "$RUN_BRANCH" ]] && return 0
+
+  local base_ref="$BASE_BRANCH"
+  if [[ -z "$base_ref" ]]; then
+    base_ref=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  fi
+
+  if git show-ref --verify --quiet "refs/heads/$RUN_BRANCH"; then
+    log_info "Switching to run branch: $RUN_BRANCH"
+    git checkout "$RUN_BRANCH" >/dev/null 2>&1 || {
+      log_error "Failed to checkout run branch: $RUN_BRANCH"
+      exit 1
+    }
+  else
+    log_info "Creating run branch: $RUN_BRANCH from $base_ref"
+    git checkout "$base_ref" >/dev/null 2>&1 || true
+    git pull origin "$base_ref" >/dev/null 2>&1 || true
+    git checkout -b "$RUN_BRANCH" >/dev/null 2>&1 || {
+      log_error "Failed to create run branch: $RUN_BRANCH"
+      exit 1
+    }
+  fi
+
+  BASE_BRANCH="$RUN_BRANCH"
+}
 
 create_task_branch() {
   local task=$1
@@ -1889,91 +1817,6 @@ notify_error() {
   if command -v notify-send &>/dev/null; then
     notify-send -u critical "GRALPH - Error" "$message" 2>/dev/null || true
   fi
-}
-
-# ============================================
-# PROMPT BUILDER
-# ============================================
-
-build_prompt() {
-  local task_override="${1:-}"
-  local prompt=""
-  
-  # Add context based on PRD source
-  case "$PRD_SOURCE" in
-    markdown)
-      prompt="@${PRD_FILE} @scripts/gralph/progress.txt"
-      ;;
-    yaml)
-      prompt="@${PRD_FILE} @scripts/gralph/progress.txt"
-      ;;
-    github)
-      # For GitHub issues, we include the issue body
-      local issue_body=""
-      if [[ -n "$task_override" ]]; then
-        issue_body=$(get_github_issue_body "$task_override")
-      fi
-      prompt="Task from GitHub Issue: $task_override
-
-Issue Description:
-$issue_body
-
-@scripts/gralph/progress.txt"
-      ;;
-  esac
-  
-  prompt="$prompt
-1. Find the highest-priority incomplete task and implement it."
-
-  local step=2
-  
-  if [[ "$SKIP_TESTS" == false ]]; then
-    prompt="$prompt
-$step. Write tests for the feature.
-$((step+1)). Run tests and ensure they pass before proceeding."
-    step=$((step+2))
-  fi
-
-  if [[ "$SKIP_LINT" == false ]]; then
-    prompt="$prompt
-$step. Run linting and ensure it passes before proceeding."
-    step=$((step+1))
-  fi
-
-  # Adjust completion step based on PRD source
-  case "$PRD_SOURCE" in
-    markdown)
-      prompt="$prompt
-$step. Update the PRD to mark the task as complete (change '- [ ]' to '- [x]')."
-      ;;
-    yaml)
-      prompt="$prompt
-$step. Update ${PRD_FILE} to mark the task as completed (set completed: true)."
-      ;;
-    github)
-      prompt="$prompt
-$step. The task will be marked complete automatically. Just note the completion in progress.txt."
-      ;;
-  esac
-  
-  step=$((step+1))
-  
-  prompt="$prompt
-$step. Append your progress to progress.txt.
-$((step+1)). Commit your changes with a descriptive message.
-ONLY WORK ON A SINGLE TASK."
-
-  if [[ "$SKIP_TESTS" == false ]]; then
-    prompt="$prompt Do not proceed if tests fail."
-  fi
-  if [[ "$SKIP_LINT" == false ]]; then
-    prompt="$prompt Do not proceed if linting fails."
-  fi
-
-  prompt="$prompt
-If ALL tasks in the PRD are complete, output <promise>COMPLETE</promise>."
-
-  echo "$prompt"
 }
 
 # ============================================
@@ -2195,204 +2038,6 @@ calculate_cost() {
 }
 
 # ============================================
-# SINGLE TASK EXECUTION
-# ============================================
-
-run_single_task() {
-  local task_name="${1:-}"
-  local task_num="${2:-$iteration}"
-  
-  retry_count=0
-  
-  echo ""
-  echo "${BOLD}>>> Task $task_num${RESET}"
-  
-  local remaining completed
-  remaining=$(count_remaining_tasks | tr -d '[:space:]')
-  completed=$(count_completed_tasks | tr -d '[:space:]')
-  remaining=${remaining:-0}
-  completed=${completed:-0}
-  echo "${DIM}    Completed: $completed | Remaining: $remaining${RESET}"
-  echo "--------------------------------------------"
-
-  # Get current task for display
-  local current_task
-  if [[ -n "$task_name" ]]; then
-    current_task="$task_name"
-  else
-    current_task=$(get_next_task)
-  fi
-  
-  if [[ -z "$current_task" ]]; then
-    log_info "No more tasks found"
-    return 2
-  fi
-  
-  current_step="Thinking"
-
-  # Create branch if needed
-  local branch_name=""
-  if [[ "$BRANCH_PER_TASK" == true ]]; then
-    branch_name=$(create_task_branch "$current_task")
-    log_info "Working on branch: $branch_name"
-  fi
-
-  # Temp file for AI output
-  tmpfile=$(mktemp)
-
-  # Build the prompt
-  local prompt
-  prompt=$(build_prompt "$current_task")
-
-  if [[ "$DRY_RUN" == true ]]; then
-    log_info "DRY RUN - Would execute:"
-    echo "${DIM}$prompt${RESET}"
-    rm -f "$tmpfile"
-    tmpfile=""
-    return_to_base_branch
-    return 0
-  fi
-
-  # Run with retry logic
-  while [[ $retry_count -lt $MAX_RETRIES ]]; do
-    # Start AI command
-    run_ai_command "$prompt" "$tmpfile"
-
-    # Start progress monitor in background
-    monitor_progress "$tmpfile" "${current_task:0:40}" &
-    monitor_pid=$!
-
-    # Wait for AI to finish
-    wait "$ai_pid" 2>/dev/null || true
-
-    # Stop the monitor
-    kill "$monitor_pid" 2>/dev/null || true
-    wait "$monitor_pid" 2>/dev/null || true
-    monitor_pid=""
-
-    # Show completion
-    tput cr 2>/dev/null || printf "\r"
-    tput el 2>/dev/null || true
-
-    # Read result
-    local result
-    result=$(cat "$tmpfile" 2>/dev/null || echo "")
-
-    # Check for empty response
-    if [[ -z "$result" ]]; then
-      ((++retry_count))
-      log_error "Empty response (attempt $retry_count/$MAX_RETRIES)"
-      if [[ $retry_count -lt $MAX_RETRIES ]]; then
-        log_info "Retrying in ${RETRY_DELAY}s..."
-        sleep "$RETRY_DELAY"
-        continue
-      fi
-      rm -f "$tmpfile"
-      tmpfile=""
-      return_to_base_branch
-      return 1
-    fi
-
-    # Check for API errors
-    local error_msg
-    if ! error_msg=$(check_for_errors "$result"); then
-      ((++retry_count))
-      log_error "API error: $error_msg (attempt $retry_count/$MAX_RETRIES)"
-      if [[ $retry_count -lt $MAX_RETRIES ]]; then
-        log_info "Retrying in ${RETRY_DELAY}s..."
-        sleep "$RETRY_DELAY"
-        continue
-      fi
-      rm -f "$tmpfile"
-      tmpfile=""
-      return_to_base_branch
-      return 1
-    fi
-
-    # Parse the result
-    local parsed
-    parsed=$(parse_ai_result "$result")
-    local response
-    response=$(echo "$parsed" | sed '/^---TOKENS---$/,$d')
-    local token_data
-    token_data=$(echo "$parsed" | sed -n '/^---TOKENS---$/,$p' | tail -3)
-    local input_tokens
-    input_tokens=$(echo "$token_data" | sed -n '1p')
-    local output_tokens
-    output_tokens=$(echo "$token_data" | sed -n '2p')
-    local actual_cost
-    actual_cost=$(echo "$token_data" | sed -n '3p')
-
-    printf "  ${GREEN}✓${RESET} %-16s │ %s\n" "Done" "${current_task:0:40}"
-    
-    if [[ -n "$response" ]]; then
-      echo ""
-      echo "$response"
-    fi
-
-    # Sanitize values
-    [[ "$input_tokens" =~ ^[0-9]+$ ]] || input_tokens=0
-    [[ "$output_tokens" =~ ^[0-9]+$ ]] || output_tokens=0
-
-    # Update totals
-    total_input_tokens=$((total_input_tokens + input_tokens))
-    total_output_tokens=$((total_output_tokens + output_tokens))
-    
-    # Track actual cost for OpenCode, or duration for Cursor
-    if [[ -n "$actual_cost" ]]; then
-      if [[ "$actual_cost" == duration:* ]]; then
-        # Cursor duration tracking
-        local dur_ms="${actual_cost#duration:}"
-        [[ "$dur_ms" =~ ^[0-9]+$ ]] && total_duration_ms=$((total_duration_ms + dur_ms))
-      elif [[ "$actual_cost" != "0" ]] && command -v bc &>/dev/null; then
-        # OpenCode cost tracking
-        total_actual_cost=$(echo "scale=6; $total_actual_cost + $actual_cost" | bc 2>/dev/null || echo "$total_actual_cost")
-      fi
-    fi
-
-    rm -f "$tmpfile"
-    tmpfile=""
-    if [[ "$AI_ENGINE" == "codex" ]] && [[ -n "$CODEX_LAST_MESSAGE_FILE" ]]; then
-      rm -f "$CODEX_LAST_MESSAGE_FILE"
-      CODEX_LAST_MESSAGE_FILE=""
-    fi
-
-    # Mark task complete for GitHub issues (since AI can't do it)
-    if [[ "$PRD_SOURCE" == "github" ]]; then
-      mark_task_complete "$current_task"
-    fi
-
-    # Create PR if requested
-    if [[ "$CREATE_PR" == true ]] && [[ -n "$branch_name" ]]; then
-      create_pull_request "$branch_name" "$current_task" "Automated implementation by GRALPH"
-    fi
-
-    # Return to base branch
-    return_to_base_branch
-
-    # Check for completion - verify by actually counting remaining tasks
-    local remaining_count
-    remaining_count=$(count_remaining_tasks | tr -d '[:space:]' | head -1)
-    remaining_count=${remaining_count:-0}
-    [[ "$remaining_count" =~ ^[0-9]+$ ]] || remaining_count=0
-    
-    if [[ "$remaining_count" -eq 0 ]]; then
-      return 2  # All tasks actually complete
-    fi
-    
-    # AI might claim completion but tasks remain - continue anyway
-    if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
-      log_debug "AI claimed completion but $remaining_count tasks remain, continuing..."
-    fi
-
-    return 0
-  done
-
-  return_to_base_branch
-  return 1
-}
-
-# ============================================
 # PARALLEL TASK EXECUTION
 # ============================================
 
@@ -2500,10 +2145,8 @@ run_parallel_agent() {
   
   echo "running" > "$status_file"
   
-  # Copy PRD file to worktree from original directory
-  if [[ "$PRD_SOURCE" == "markdown" ]] || [[ "$PRD_SOURCE" == "yaml" ]]; then
-    cp "$ORIGINAL_DIR/$PRD_FILE" "$worktree_dir/" 2>/dev/null || true
-  fi
+  # Copy tasks.yaml to worktree from original directory
+  cp "$ORIGINAL_DIR/$PRD_FILE" "$worktree_dir/" 2>/dev/null || true
   
   # Ensure progress.txt exists in worktree
   touch "$worktree_dir/scripts/gralph/progress.txt"
@@ -2814,7 +2457,7 @@ run_parallel_tasks_yaml_v1() {
     BASE_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   fi
   export BASE_BRANCH
-  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_SOURCE PRD_FILE CREATE_PR PR_DRAFT OPENCODE_MODEL
+  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_FILE CREATE_PR PR_DRAFT OPENCODE_MODEL
   
   # Initialize artifacts
   init_artifacts_dir
@@ -3170,432 +2813,6 @@ run_parallel_tasks_yaml_v1() {
   return 0
 }
 
-run_parallel_tasks() {
-  log_info "Running ${BOLD}$MAX_PARALLEL parallel agents${RESET} (each in isolated worktree)..."
-  
-  local all_tasks=()
-  
-  # Get all pending tasks
-  while IFS= read -r task; do
-    [[ -n "$task" ]] && all_tasks+=("$task")
-  done < <(get_all_tasks)
-  
-  if [[ ${#all_tasks[@]} -eq 0 ]]; then
-    log_info "No tasks to run"
-    return 2
-  fi
-  
-  local total_tasks=${#all_tasks[@]}
-  log_info "Found $total_tasks tasks to process"
-  
-  # Store original directory for git operations from subshells
-  ORIGINAL_DIR=$(pwd)
-  export ORIGINAL_DIR
-  
-  # Set up worktree base directory
-  WORKTREE_BASE=$(mktemp -d)
-  export WORKTREE_BASE
-  log_debug "Worktree base: $WORKTREE_BASE"
-  
-  # Ensure we have a base branch set
-  if [[ -z "$BASE_BRANCH" ]]; then
-    BASE_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-  fi
-  export BASE_BRANCH
-  log_info "Base branch: $BASE_BRANCH"
-  
-  # Export variables needed by subshell agents
-  export AI_ENGINE MAX_RETRIES RETRY_DELAY PRD_SOURCE PRD_FILE CREATE_PR PR_DRAFT OPENCODE_MODEL
-  
-  local batch_num=0
-  local completed_branches=()
-  local groups=("all")
-
-  if [[ "$PRD_SOURCE" == "yaml" ]]; then
-    groups=()
-    while IFS= read -r group; do
-      [[ -n "$group" ]] && groups+=("$group")
-    done < <(yq -r '.tasks[] | select(.completed != true) | (.parallel_group // 0)' "$PRD_FILE" 2>/dev/null | sort -n | uniq)
-  fi
-
-  for group in "${groups[@]}"; do
-    local tasks=()
-    local group_label=""
-
-    if [[ "$PRD_SOURCE" == "yaml" ]]; then
-      while IFS= read -r task; do
-        [[ -n "$task" ]] && tasks+=("$task")
-      done < <(get_tasks_in_group_yaml "$group")
-      [[ ${#tasks[@]} -eq 0 ]] && continue
-      group_label=" (group $group)"
-    else
-      tasks=("${all_tasks[@]}")
-    fi
-
-    local batch_start=0
-    local total_group_tasks=${#tasks[@]}
-
-    while [[ $batch_start -lt $total_group_tasks ]]; do
-      ((++batch_num))
-      local batch_end=$((batch_start + MAX_PARALLEL))
-      [[ $batch_end -gt $total_group_tasks ]] && batch_end=$total_group_tasks
-      local batch_size=$((batch_end - batch_start))
-
-      echo ""
-      echo "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-      echo "${BOLD}Batch $batch_num${group_label}: Spawning $batch_size parallel agents${RESET}"
-      echo "${DIM}Each agent runs in its own git worktree with isolated workspace${RESET}"
-      echo "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-      echo ""
-
-      # Setup arrays for this batch
-      parallel_pids=()
-      local batch_tasks=()
-      local batch_agent_nums=()
-      local status_files=()
-      local output_files=()
-      local log_files=()
-      local stream_files=()
-
-      # Start all agents in the batch
-      for ((i = batch_start; i < batch_end; i++)); do
-        local task="${tasks[$i]}"
-        local agent_num=$((iteration + 1))
-        ((++iteration))
-
-        local status_file=$(mktemp)
-        local output_file=$(mktemp)
-        local log_file=$(mktemp)
-        local stream_file=$(mktemp)
-
-        batch_tasks+=("$task")
-        batch_agent_nums+=("$agent_num")
-        status_files+=("$status_file")
-        output_files+=("$output_file")
-        log_files+=("$log_file")
-        stream_files+=("$stream_file")
-
-        echo "waiting" > "$status_file"
-
-        # Show initial status
-        printf "  ${CYAN}◉${RESET} Agent %d: %s\n" "$agent_num" "${task:0:50}"
-
-        # Run agent in background
-        (
-          run_parallel_agent "$task" "$agent_num" "$output_file" "$status_file" "$log_file" "$stream_file"
-        ) &
-        parallel_pids+=($!)
-      done
-
-      # Print initial status lines for each agent
-      for ((j=0; j<batch_size; j++)); do
-        printf "  ${DIM}○${RESET} Agent %d: ${DIM}Initializing...${RESET}\n" "${batch_agent_nums[$j]}"
-      done
-      
-      # Fixed width for clean line overwrite (avoids flicker)
-      local line_width=78
-
-      # Monitor progress with a spinner - show each agent on its own line
-      local spinner_chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-      local spin_idx=0
-      local start_time=$SECONDS
-
-      # Hide cursor during progress updates to prevent flickering
-      printf "\e[?25l"
-
-      while true; do
-        # Check if all processes are done
-        local all_done=true
-        local done_count=0
-        local failed_count=0
-
-        # Move cursor up to the first agent line
-        printf "\033[%dA" "$batch_size"
-
-        for ((j = 0; j < batch_size; j++)); do
-          local pid="${parallel_pids[$j]}"
-          local status=$(cat "${status_files[$j]}" 2>/dev/null || echo "waiting")
-          local task="${batch_tasks[$j]}"
-          local agent_n="${batch_agent_nums[$j]}"
-          local elapsed=$((SECONDS - start_time))
-          local spinner_char="${spinner_chars:$spin_idx:1}"
-          local line=""
-
-          case "$status" in
-            done)
-              done_count=$((done_count + 1))
-              line=$(printf "  ${GREEN}✓${RESET} Agent %d: ${DIM}%s${RESET} ${GREEN}done${RESET}" "$agent_n" "${task:0:40}")
-              ;;
-            failed)
-              failed_count=$((failed_count + 1))
-              line=$(printf "  ${RED}✗${RESET} Agent %d: ${DIM}%s${RESET} ${RED}failed${RESET}" "$agent_n" "${task:0:40}")
-              ;;
-            running)
-              if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-              fi
-              local step
-              step=$(get_agent_current_step "${stream_files[$j]}")
-              local step_color
-              step_color=$(get_step_color "$step")
-              line=$(printf "  ${CYAN}%s${RESET} Agent %d: ${step_color}%-14s${RESET} │ %-30s ${DIM}[%02d:%02d]${RESET}" \
-                "$spinner_char" "$agent_n" "$step" "${task:0:30}" $((elapsed/60)) $((elapsed%60)))
-              ;;
-            "setting up")
-              if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-              fi
-              line=$(printf "  ${YELLOW}%s${RESET} Agent %d: ${YELLOW}Setting up${RESET}    │ %-30s ${DIM}[%02d:%02d]${RESET}" \
-                "$spinner_char" "$agent_n" "${task:0:30}" $((elapsed/60)) $((elapsed%60)))
-              ;;
-            *)
-              if kill -0 "$pid" 2>/dev/null; then
-                all_done=false
-              fi
-              line=$(printf "  ${DIM}%s${RESET} Agent %d: ${DIM}Waiting${RESET}        │ %-30s" "$spinner_char" "$agent_n" "${task:0:30}")
-              ;;
-          esac
-
-          # Print line with padding to overwrite previous content (no flicker)
-          printf "\r%-${line_width}s\n" "$line"
-        done
-
-        [[ "$all_done" == true ]] && break
-
-        spin_idx=$(( (spin_idx + 1) % ${#spinner_chars} ))
-        sleep 0.3
-      done
-
-      # Restore cursor visibility
-      printf "\e[?25h"
-
-      # Wait for all processes to fully complete
-      for pid in "${parallel_pids[@]}"; do
-        wait "$pid" 2>/dev/null || true
-      done
-
-      # Show final status for this batch
-      echo ""
-      echo "${BOLD}Batch $batch_num Results:${RESET}"
-      for ((j = 0; j < batch_size; j++)); do
-        local task="${batch_tasks[$j]}"
-        local status_file="${status_files[$j]}"
-        local output_file="${output_files[$j]}"
-        local log_file="${log_files[$j]}"
-        local status=$(cat "$status_file" 2>/dev/null || echo "unknown")
-        local agent_num=$((iteration - batch_size + j + 1))
-
-        local icon color branch_info=""
-        case "$status" in
-          done)
-            icon="✓"
-            color="$GREEN"
-            # Collect tokens and branch name
-            local output_data=$(cat "$output_file" 2>/dev/null || echo "0 0")
-            local in_tok=$(echo "$output_data" | awk '{print $1}')
-            local out_tok=$(echo "$output_data" | awk '{print $2}')
-            local branch=$(echo "$output_data" | awk '{print $3}')
-            [[ "$in_tok" =~ ^[0-9]+$ ]] || in_tok=0
-            [[ "$out_tok" =~ ^[0-9]+$ ]] || out_tok=0
-            total_input_tokens=$((total_input_tokens + in_tok))
-            total_output_tokens=$((total_output_tokens + out_tok))
-            if [[ -n "$branch" ]]; then
-              completed_branches+=("$branch")
-              branch_info=" → ${CYAN}$branch${RESET}"
-            fi
-
-            # Mark task complete in PRD
-            if [[ "$PRD_SOURCE" == "markdown" ]]; then
-              mark_task_complete_markdown "$task"
-            elif [[ "$PRD_SOURCE" == "yaml" ]]; then
-              mark_task_complete_yaml "$task"
-            elif [[ "$PRD_SOURCE" == "github" ]]; then
-              mark_task_complete_github "$task"
-            fi
-            ;;
-          failed)
-            icon="✗"
-            color="$RED"
-            if [[ -s "$log_file" ]]; then
-              branch_info=" ${DIM}(error below)${RESET}"
-            fi
-            ;;
-          *)
-            icon="?"
-            color="$YELLOW"
-            ;;
-        esac
-
-        printf "  ${color}%s${RESET} Agent %d: %s%s\n" "$icon" "$agent_num" "${task:0:45}" "$branch_info"
-
-        # Show log for failed agents
-        if [[ "$status" == "failed" ]] && [[ -s "$log_file" ]]; then
-          echo "${DIM}    ┌─ Agent $agent_num log:${RESET}"
-          sed 's/^/    │ /' "$log_file" | head -20
-          local log_lines=$(wc -l < "$log_file")
-          if [[ $log_lines -gt 20 ]]; then
-            echo "${DIM}    │ ... ($((log_lines - 20)) more lines)${RESET}"
-          fi
-          echo "${DIM}    └─${RESET}"
-        fi
-
-        # Cleanup temp files
-        rm -f "$status_file" "$output_file" "$log_file" "${stream_files[$j]}"
-      done
-
-      batch_start=$batch_end
-
-      # Check if we've hit max iterations
-      if [[ $MAX_ITERATIONS -gt 0 ]] && [[ $iteration -ge $MAX_ITERATIONS ]]; then
-        log_warn "Reached max iterations ($MAX_ITERATIONS)"
-        break
-      fi
-    done
-
-    if [[ $MAX_ITERATIONS -gt 0 ]] && [[ $iteration -ge $MAX_ITERATIONS ]]; then
-      break
-    fi
-  done
-  
-  # Cleanup worktree base
-  if ! find "$WORKTREE_BASE" -maxdepth 1 -type d -name 'agent-*' -print -quit 2>/dev/null | grep -q .; then
-    rm -rf "$WORKTREE_BASE" 2>/dev/null || true
-  else
-    log_warn "Preserving worktree base with dirty agents: $WORKTREE_BASE"
-  fi
-  
-  # Handle completed branches
-  if [[ ${#completed_branches[@]} -gt 0 ]]; then
-    echo ""
-    echo "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    
-    if [[ "$CREATE_PR" == true ]]; then
-      # PRs were created, just show the branches
-      echo "${BOLD}Branches created by agents:${RESET}"
-      for branch in "${completed_branches[@]}"; do
-        echo "  ${CYAN}•${RESET} $branch"
-      done
-    else
-      # Auto-merge branches back to main
-      echo "${BOLD}Merging agent branches into ${BASE_BRANCH}...${RESET}"
-      echo ""
-
-      if ! git checkout "$BASE_BRANCH" >/dev/null 2>&1; then
-        log_warn "Could not checkout $BASE_BRANCH; leaving agent branches unmerged."
-        echo "${BOLD}Branches created by agents:${RESET}"
-        for branch in "${completed_branches[@]}"; do
-          echo "  ${CYAN}•${RESET} $branch"
-        done
-        return 0
-      fi
-      
-      local merge_failed=()
-      
-      for branch in "${completed_branches[@]}"; do
-        printf "  Merging ${CYAN}%s${RESET}..." "$branch"
-        
-        # Attempt to merge
-        if git merge --no-edit "$branch" >/dev/null 2>&1; then
-          printf " ${GREEN}✓${RESET}\n"
-          # Delete the branch after successful merge
-          git branch -d "$branch" >/dev/null 2>&1 || true
-        else
-          printf " ${YELLOW}conflict${RESET}"
-          merge_failed+=("$branch")
-          # Don't abort yet - try AI resolution
-        fi
-      done
-      
-      # Use AI to resolve merge conflicts
-      if [[ ${#merge_failed[@]} -gt 0 ]]; then
-        echo ""
-        echo "${BOLD}Using AI to resolve ${#merge_failed[@]} merge conflict(s)...${RESET}"
-        echo ""
-        
-        local still_failed=()
-        
-        for branch in "${merge_failed[@]}"; do
-          printf "  Resolving ${CYAN}%s${RESET}..." "$branch"
-          
-          # Get list of conflicted files
-          local conflicted_files
-          conflicted_files=$(git diff --name-only --diff-filter=U 2>/dev/null)
-          
-          if [[ -z "$conflicted_files" ]]; then
-            # No conflicts found (maybe already resolved or aborted)
-            git merge --abort 2>/dev/null || true
-            git merge --no-edit "$branch" >/dev/null 2>&1 || {
-              printf " ${RED}✗${RESET}\n"
-              still_failed+=("$branch")
-              git merge --abort 2>/dev/null || true
-              continue
-            }
-            printf " ${GREEN}✓${RESET}\n"
-            git branch -d "$branch" >/dev/null 2>&1 || true
-            continue
-          fi
-          
-          # Build prompt for AI to resolve conflicts
-          local resolve_prompt="You are resolving a git merge conflict. The following files have conflicts:
-
-$conflicted_files
-
-For each conflicted file:
-1. Read the file to see the conflict markers (<<<<<<< HEAD, =======, >>>>>>> branch)
-2. Understand what both versions are trying to do
-3. Edit the file to resolve the conflict by combining both changes intelligently
-4. Remove all conflict markers
-5. Make sure the resulting code is valid and compiles
-
-After resolving all conflicts:
-1. Run 'git add' on each resolved file
-2. Run 'git commit --no-edit' to complete the merge
-
-Be careful to preserve functionality from BOTH branches. The goal is to integrate all features."
-
-          # Run AI to resolve conflicts
-          local resolve_tmpfile
-          resolve_tmpfile=$(mktemp)
-          
-          execute_ai_prompt "$resolve_prompt" "$resolve_tmpfile"
-          
-          rm -f "$resolve_tmpfile"
-          
-          # Check if merge was completed
-          if ! git diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
-            # No more conflicts - merge succeeded
-            printf " ${GREEN}✓ (AI resolved)${RESET}\n"
-            git branch -d "$branch" >/dev/null 2>&1 || true
-          else
-            # Still has conflicts
-            printf " ${RED}✗ (AI couldn't resolve)${RESET}\n"
-            still_failed+=("$branch")
-            git merge --abort 2>/dev/null || true
-          fi
-        done
-        
-        if [[ ${#still_failed[@]} -gt 0 ]]; then
-          echo ""
-          echo "${YELLOW}Some conflicts could not be resolved automatically:${RESET}"
-          for branch in "${still_failed[@]}"; do
-            echo "  ${YELLOW}•${RESET} $branch"
-          done
-          echo ""
-          echo "${DIM}Resolve conflicts manually: git merge <branch>${RESET}"
-        else
-          echo ""
-          echo "${GREEN}All branches merged successfully!${RESET}"
-        fi
-      else
-        echo ""
-        echo "${GREEN}All branches merged successfully!${RESET}"
-      fi
-    fi
-  fi
-  
-  return 0
-}
-
 # ============================================
 # SUMMARY
 # ============================================
@@ -3682,6 +2899,9 @@ main() {
   # Warn if skills are missing
   ensure_skills_for_engine "$AI_ENGINE" "warn"
   
+  # Ensure we are on a run branch if tasks.yaml defines one
+  ensure_run_branch
+
   # Show banner
   echo "${BOLD}============================================${RESET}"
   echo "${BOLD}GRALPH${RESET} - Running until PRD is complete"
@@ -3693,14 +2913,15 @@ main() {
     *) engine_display="${MAGENTA}Claude Code${RESET}" ;;
   esac
   echo "Engine: $engine_display"
-  echo "Source: ${CYAN}$PRD_SOURCE${RESET} (${PRD_FILE:-$GITHUB_REPO})"
+  echo "PRD: ${CYAN}$PRD_ID${RESET} (${PRD_RUN_DIR})"
   
   local mode_parts=()
   [[ "$SKIP_TESTS" == true ]] && mode_parts+=("no-tests")
   [[ "$SKIP_LINT" == true ]] && mode_parts+=("no-lint")
   [[ "$DRY_RUN" == true ]] && mode_parts+=("dry-run")
-  [[ "$PARALLEL" == true ]] && mode_parts+=("parallel:$MAX_PARALLEL")
+  [[ "$SEQUENTIAL" == true ]] && mode_parts+=("sequential") || mode_parts+=("parallel:$MAX_PARALLEL")
   [[ "$BRANCH_PER_TASK" == true ]] && mode_parts+=("branch-per-task")
+  [[ -n "$RUN_BRANCH" ]] && mode_parts+=("run-branch:$RUN_BRANCH")
   [[ "$CREATE_PR" == true ]] && mode_parts+=("create-pr")
   [[ $MAX_ITERATIONS -gt 0 ]] && mode_parts+=("max:$MAX_ITERATIONS")
   
@@ -3709,57 +2930,22 @@ main() {
   fi
   echo "${BOLD}============================================${RESET}"
 
-  # Run in parallel or sequential mode
-  if [[ "$PARALLEL" == true ]]; then
-    local parallel_result=0
-    # Use DAG scheduler for YAML v1, otherwise legacy parallel
-    if [[ "$PRD_SOURCE" == "yaml" ]] && is_yaml_v1; then
-      run_parallel_tasks_yaml_v1 || parallel_result=$?
-    else
-      run_parallel_tasks || parallel_result=$?
-    fi
-    if [[ "$parallel_result" -ne 0 ]]; then
-      notify_error "GRALPH stopped due to external failure or deadlock"
-      exit "$parallel_result"
-    fi
-    show_summary
-    notify_done
-    exit 0
+  # Run DAG scheduler (sequential = max 1 parallel)
+  if [[ "$SEQUENTIAL" == true ]]; then
+    MAX_PARALLEL=1
   fi
-
-  # Sequential main loop
-  while true; do
-    ((++iteration))
-    local result_code=0
-    run_single_task "" "$iteration" || result_code=$?
-    
-    case $result_code in
-      0)
-        # Success, continue
-        ;;
-      1)
-        # Error, but continue to next task
-        log_warn "Task failed after $MAX_RETRIES attempts, continuing..."
-        ;;
-      2)
-        # All tasks complete
-        show_summary
-        notify_done
-        exit 0
-        ;;
-    esac
-    
-    # Check max iterations
-    if [[ $MAX_ITERATIONS -gt 0 ]] && [[ $iteration -ge $MAX_ITERATIONS ]]; then
-      log_warn "Reached max iterations ($MAX_ITERATIONS)"
-      show_summary
-      notify_done "GRALPH stopped after $MAX_ITERATIONS iterations"
-      exit 0
-    fi
-    
-    # Small delay between iterations
-    sleep 1
-  done
+  
+  local result=0
+  run_parallel_tasks_yaml_v1 || result=$?
+  
+  if [[ "$result" -ne 0 ]]; then
+    notify_error "GRALPH stopped due to external failure or deadlock"
+    exit "$result"
+  fi
+  
+  show_summary
+  notify_done
+  exit 0
 }
 
 # Run main

@@ -1,7 +1,7 @@
-# Example tasks.yaml v1 for Ralph parallel execution
+# Example tasks.yaml for GRALPH parallel execution
 # Copy this file to tasks.yaml and customize for your project
 
-version: 1
+branchName: gralph/example-feature
 tasks:
   # Database layer - no dependencies, uses db-migrations mutex
   - id: DB-001

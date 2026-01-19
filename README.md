@@ -6,21 +6,22 @@ GRALPH is a parallel AI coding runner that executes tasks across multiple agents
 
 ## Overview
 
-GRALPH reads task definitions, schedules them with dependencies and mutexes, and runs multiple agents in parallel. Each task produces artifacts (logs and reports) and commits work to isolated branches.
+GRALPH reads a PRD, generates tasks with dependencies, and runs multiple agents in parallel using a DAG scheduler. Each task produces artifacts and commits work to isolated branches.
 
 ## Features
 
 - DAG-based task scheduling with dependencies and mutexes
-- Parallel execution in isolated git worktrees
-- Per-task artifacts (JSON reports and logs)
-- Integration branch merging with conflict resolution
+- Parallel execution by default (isolated git worktrees)
+- Per-PRD run directories with all artifacts
+- Automatic resume on re-run
 - Support for Claude Code, OpenCode, Codex, and Cursor
 
 ## Requirements
 
 - One of: Claude Code CLI, OpenCode CLI, Codex CLI, or Cursor (`agent` in PATH)
+- `yq` (YAML parsing)
 - `jq`
-- Optional: `yq` (YAML task files), `gh` (GitHub Issues/PRs), `bc` (cost estimates)
+- Optional: `gh` (PRs), `bc` (cost estimates)
 
 ## Setup
 
@@ -37,84 +38,80 @@ chmod +x scripts/gralph/gralph.sh
 ## Usage
 
 ```bash
-# OpenCode: write PRD to PRD.md, then run gralph
-./scripts/gralph/gralph.sh --opencode --parallel
+# 1. Create PRD with prd-id (use /prd skill)
+# 2. Run gralph (parallel by default)
+./scripts/gralph/gralph.sh --opencode
 
-# Use an existing tasks.yaml
-./scripts/gralph/gralph.sh --yaml tasks.yaml --parallel
+# Run sequentially instead (ralph-based)
+./scripts/gralph/gralph.sh --opencode --sequential
 
 # Limit parallelism
-./scripts/gralph/gralph.sh --parallel --max-parallel 2
+./scripts/gralph/gralph.sh --opencode --max-parallel 2
+
+# Resume a previous run
+./scripts/gralph/gralph.sh --opencode --resume my-feature
 ```
 
 ## Configuration
 
 | Flag | Description |
 |------|-------------|
-| `--parallel` | Run tasks in parallel |
+| `--sequential` | Run tasks one at a time (default: parallel) |
 | `--max-parallel N` | Max concurrent agents (default: 3) |
-| `--external-fail-timeout N` | Seconds to wait after external failure (default: 300) |
+| `--resume PRD-ID` | Resume a previous run |
 | `--create-pr` | Create PRs instead of auto-merge |
 | `--dry-run` | Preview only |
 
-## Task Files
+## PRD Format
 
-GRALPH supports `tasks.yaml` v1 format with dependencies and mutexes:
+PRD.md must include a `prd-id` line:
 
-```yaml
-version: 1
-tasks:
-  - id: SETUP-001
-    title: "Initialize project structure"
-    completed: false
-    dependsOn: []
-    mutex: ["lockfile"]
-  - id: US-001
-    title: "Build hero section"
-    completed: false
-    dependsOn: ["SETUP-001"]
-    mutex: []
+```markdown
+# PRD: My Feature
+
+prd-id: my-feature
+
+## Introduction
+...
 ```
+
+GRALPH generates `tasks.yaml` automatically from PRD.md.
 
 ## Artifacts
 
-Each run creates `artifacts/run-YYYYMMDD-HHMM/`:
-- `reports/<TASK_ID>.json` - Task report
-- `reports/<TASK_ID>.log` - Task log
-- `review-report.json` - Integration review (if enabled)
-
-## Code Location
-
-Tasks run in isolated git worktrees and commit to feature branches. To inspect completed task code:
-
-```bash
-# Find branch in task report
-cat artifacts/run-*/reports/TASK-ID.json | jq '.branch'
-
-# Checkout the branch
-git checkout <branch>
-```
+Each PRD run creates `artifacts/prd/<prd-id>/`:
+- `PRD.md` - Copy of the PRD
+- `tasks.yaml` - Generated task list
+- `progress.txt` - Progress notes
+- `reports/<TASK_ID>.json` - Task reports
+- `reports/<TASK_ID>.log` - Task logs
 
 ## Workflow
 
-1) Ask your engine to write a PRD to `PRD.md`
-2) Run gralph; it creates `tasks.yaml` and executes tasks
-3) Inspect artifacts and merge/PR as needed
+1. Create PRD.md with `prd-id: your-feature` (use /prd skill)
+2. Run `./scripts/gralph/gralph.sh --opencode`
+3. GRALPH creates `artifacts/prd/<prd-id>/` with tasks.yaml
+4. Tasks run in parallel using DAG scheduler
+5. Re-run anytime to resume (auto-detects existing run)
+6. Use `--resume <prd-id>` to resume a different PRD
 
-Engines:
+## Engines
+
 - `--opencode`
 - `--claude`
 - `--cursor`
 - `--codex`
 
-Skills used by gralph:
-- `prd`
-- `ralph`
-- `task-metadata`
-- `dag-planner`
-- `parallel-safe-implementation`
-- `merge-integrator`
-- `semantic-reviewer`
+## Skills
+
+GRALPH uses these skills:
+- `prd` - Generate PRDs with prd-id
+- `ralph` - Convert PRDs to tasks
+- `task-metadata` - Validate tasks.yaml
+- `dag-planner` - Plan task execution
+- `parallel-safe-implementation` - Safe parallel coding
+- `merge-integrator` - Merge branches
+- `semantic-reviewer` - Review integrated code
 
 ## Contributing
 

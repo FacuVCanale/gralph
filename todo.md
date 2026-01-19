@@ -1,8 +1,25 @@
-- los rpeorts y progress se pasan entre agentes
-- poder correr con permisos: allow all para que incluso cuando detecte fallos del SO o de entorno que un agente se trigeree para corregirlos
+# TODO
 
-- ver si el mutex en realdiad es necesario (hasta ahora no se usó en los agentes)
-- ver que cosas son necesarias realmente
-- ahora parece secuencial en la mayoria de casos, ver como se puede paralelizar mejor. En el contrato entre tasks definir que cosa va a hacer cada una y como, asi la otra puede desarrollar su parte sin interferir en la otra.
+## Architecture & Communication
+- [ ] Pass reports and progress context between agents.
+- [ ] Implement "Allow All" permission mode: enable agents to automatically trigger and fix OS or environment-level failures.
+- [ ] Evaluate if mutexes are actually necessary (currently unused by agents).
+- [ ] Audit core requirements and remove unnecessary complexity.
 
-- Que todo lo relacionado a gralph esté dentro de la carpeta scripts/gralph, corregir el readme, sh, etc. para que tenga en cuenta este cambio
+## Execution & Parallelism
+- [ ] Improve parallelization: Currently, execution is mostly sequential.
+- [ ] Define explicit contracts between tasks to ensure independence and avoid interference during parallel development.
+
+## New Features
+- [ ] Implement support for reading and resolving repository issues.
+- [ ] Add direct task execution CLI:
+    - **Single task**:
+      ```bash
+      ./gralph.sh "add dark mode"
+      ./gralph.sh "fix the auth bug"
+      ```
+    - **Task list**:
+      ```bash
+      ./gralph.sh              # defaults to PRD.md
+      ./gralph.sh --prd tasks.md
+      ```
