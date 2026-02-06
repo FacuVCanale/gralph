@@ -487,6 +487,7 @@ ${BOLD}PRD OPTIONS:${RESET}
 
 ${BOLD}OTHER OPTIONS:${RESET}
   --init              Install missing skills for the current AI engine and exit
+  --update            Update gralph to the latest version
   --skills-url URL    Override skills base URL (default: GitHub raw)
   -v, --verbose       Show debug output
   -h, --help          Show this help
@@ -516,6 +517,36 @@ EOF
 
 show_version() {
   echo "GRALPH v${VERSION}"
+}
+
+self_update() {
+  # Find the gralph installation root (two levels up from this script)
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local install_root
+  install_root="$(cd "$script_dir/../.." && pwd)"
+
+  if [[ ! -d "$install_root/.git" ]]; then
+    log_error "Not a git installation. Re-install with:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | bash"
+    exit 1
+  fi
+
+  echo "${CYAN}Updating gralph...${RESET}"
+  local before after
+  before=$(git -C "$install_root" rev-parse --short HEAD 2>/dev/null)
+  if ! git -C "$install_root" pull --ff-only 2>/dev/null; then
+    echo "${YELLOW}[WARN] Fast-forward failed, resetting to origin/main...${RESET}"
+    git -C "$install_root" fetch origin 2>/dev/null
+    git -C "$install_root" reset --hard origin/main 2>/dev/null
+  fi
+  after=$(git -C "$install_root" rev-parse --short HEAD 2>/dev/null)
+
+  if [[ "$before" == "$after" ]]; then
+    echo "${GREEN}[OK] Already up to date (${after})${RESET}"
+  else
+    echo "${GREEN}[OK] Updated ${before} -> ${after}${RESET}"
+  fi
 }
 
 # ============================================
@@ -638,6 +669,10 @@ parse_args() {
         ;;
       -h|--help)
         show_help
+        exit 0
+        ;;
+      --update)
+        self_update
         exit 0
         ;;
       --version)

@@ -15,52 +15,106 @@ GRALPH reads a PRD, generates tasks with dependencies, and runs multiple agents 
 - Per-PRD run directories with all artifacts
 - Automatic resume on re-run
 - Support for Claude Code, OpenCode, Codex, and Cursor
+- Cross-platform: macOS, Linux, and Windows
+
+## Install
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
+```
+
+Restart your terminal after installing. Then `gralph` is available globally.
+
+**Update:**
+
+```bash
+gralph --update
+```
 
 ## Requirements
 
 - One of: Claude Code CLI, OpenCode CLI, Codex CLI, or Cursor (`agent` in PATH)
 - `yq` (YAML parsing)
 - `jq`
+- `git`
 - Optional: `gh` (PRs), `bc` (cost estimates)
 
-## Setup
+## Quick Start
 
 ```bash
-# From your project root
-mkdir -p scripts/gralph
-cp /path/to/gralph/gralph.sh scripts/gralph/
-chmod +x scripts/gralph/gralph.sh
+# 1. Install skills in your project
+cd my-project
+gralph --init
 
-# Install required skills for the selected engine
-./scripts/gralph/gralph.sh --init
+# 2. Create a PRD with prd-id (use /prd skill or write one manually)
+# PRD.md must include: prd-id: my-feature
+
+# 3. Run gralph (parallel by default)
+gralph
+
+# Or with a specific engine
+gralph --opencode
 ```
 
 ## Usage
 
 ```bash
-# 1. Create PRD with prd-id (use /prd skill)
-# 2. Run gralph (parallel by default)
-./scripts/gralph/gralph.sh --opencode
+# Run with default engine (Claude Code)
+gralph
 
-# Run sequentially instead (ralph-based)
-./scripts/gralph/gralph.sh --opencode --sequential
+# Run with a specific engine
+gralph --opencode
+gralph --cursor
+gralph --codex
+
+# Run sequentially
+gralph --sequential
 
 # Limit parallelism
-./scripts/gralph/gralph.sh --opencode --max-parallel 2
+gralph --max-parallel 2
+
+# Dry run (preview without executing)
+gralph --dry-run
 
 # Resume a previous run
-./scripts/gralph/gralph.sh --opencode --resume my-feature
+gralph --resume my-feature
+
+# Skip tests and linting
+gralph --fast
+
+# Create PRs per task instead of auto-merge
+gralph --create-pr --draft-pr
 ```
 
 ## Configuration
 
 | Flag | Description |
 |------|-------------|
+| `--claude` | Use Claude Code (default) |
+| `--opencode` | Use OpenCode |
+| `--cursor` | Use Cursor agent |
+| `--codex` | Use Codex CLI |
 | `--sequential` | Run tasks one at a time (default: parallel) |
 | `--max-parallel N` | Max concurrent agents (default: 3) |
 | `--resume PRD-ID` | Resume a previous run |
 | `--create-pr` | Create PRs instead of auto-merge |
+| `--draft-pr` | Create PRs as drafts |
+| `--branch-per-task` | Create a new git branch for each task |
+| `--no-tests` | Skip tests |
+| `--no-lint` | Skip linting |
+| `--fast` | Skip both tests and linting |
 | `--dry-run` | Preview only |
+| `--init` | Install missing skills for the current engine |
+| `--update` | Update gralph to the latest version |
+| `-v, --verbose` | Show debug output |
 
 ## PRD Format
 
@@ -77,6 +131,17 @@ prd-id: my-feature
 
 GRALPH generates `tasks.yaml` automatically from PRD.md.
 
+## Workflow
+
+1. Install gralph (see [Install](#install))
+2. `cd` into your project and run `gralph --init`
+3. Create `PRD.md` with `prd-id: your-feature` (use `/prd` skill)
+4. Run `gralph` (or `gralph --opencode`, etc.)
+5. GRALPH creates `artifacts/prd/<prd-id>/` with tasks.yaml
+6. Tasks run in parallel using the DAG scheduler
+7. Re-run anytime to resume (auto-detects existing run)
+8. Use `--resume <prd-id>` to resume a different PRD
+
 ## Artifacts
 
 Each PRD run creates `artifacts/prd/<prd-id>/`:
@@ -86,25 +151,9 @@ Each PRD run creates `artifacts/prd/<prd-id>/`:
 - `reports/<TASK_ID>.json` - Task reports
 - `reports/<TASK_ID>.log` - Task logs
 
-## Workflow
-
-1. Create PRD.md with `prd-id: your-feature` (use /prd skill)
-2. Run `./scripts/gralph/gralph.sh --opencode`
-3. GRALPH creates `artifacts/prd/<prd-id>/` with tasks.yaml
-4. Tasks run in parallel using DAG scheduler
-5. Re-run anytime to resume (auto-detects existing run)
-6. Use `--resume <prd-id>` to resume a different PRD
-
-## Engines
-
-- `--opencode`
-- `--claude`
-- `--cursor`
-- `--codex`
-
 ## Skills
 
-GRALPH uses these skills:
+GRALPH uses these skills (installed with `--init`):
 - `prd` - Generate PRDs with prd-id
 - `ralph` - Convert PRDs to tasks
 - `task-metadata` - Validate tasks.yaml
