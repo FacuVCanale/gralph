@@ -23,3 +23,4 @@
       ./gralph.sh              # defaults to PRD.md
       ./gralph.sh --prd tasks.md
       ```
+- [ ] Implement forceful init
