@@ -563,8 +563,19 @@ function Check-Requirements {
     Log-Info "Resuming PRD: $($script:PRD_ID)"
   } else {
     if (-not (Test-Path $script:PRD_FILE)) {
-      Log-Error "$($script:PRD_FILE) not found"
-      exit 1
+      $root = Resolve-RepoRoot
+      Push-Location $root
+      try {
+        $found = Find-PrdFile
+        if ($found) {
+          if ($found -is [System.IO.FileInfo]) { $script:PRD_FILE = $found.FullName }
+          else { $script:PRD_FILE = (Resolve-Path $found).Path }
+        }
+      } finally { Pop-Location }
+      if (-not (Test-Path $script:PRD_FILE)) {
+        Log-Error "PRD.md not found"
+        exit 1
+      }
     }
     $script:PRD_ID = Extract-PrdId $script:PRD_FILE
     if (-not $script:PRD_ID) {
