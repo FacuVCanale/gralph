@@ -436,6 +436,7 @@ ${script:BOLD}PRD OPTIONS:${script:RESET}
 
 ${script:BOLD}OTHER OPTIONS:${script:RESET}
   --init              Install missing skills for the current AI engine and exit
+  --update            Update gralph to the latest version
   --skills-url URL    Override skills base URL (default: GitHub raw)
   -v, --verbose       Show debug output
   -h, --help          Show this help
@@ -516,6 +517,7 @@ function Parse-Args {
       }
       "-v" { $script:VERBOSE = $true }
       "--verbose" { $script:VERBOSE = $true }
+      "--update" { Self-Update; exit 0 }
       "-h" { Show-Help; exit 0 }
       "--help" { Show-Help; exit 0 }
       "-help" { Show-Help; exit 0 }
@@ -1910,13 +1912,51 @@ function Show-Summary {
 }
 
 # ============================================
-# EARLY EXIT FOR HELP / VERSION
+# SELF-UPDATE
+# ============================================
+
+function Self-Update {
+  # Temporarily allow stderr from git (PS 5.x treats it as terminating error)
+  $prevPref = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    # Find the gralph installation root (two levels up from this script)
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    $installRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+    $gitDir = Join-Path $installRoot ".git"
+    if (-not (Test-Path $gitDir)) {
+      Write-Host "[ERROR] Not a git installation. Re-install with:" -ForegroundColor Red
+      Write-Host "  irm https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.ps1 | iex" -ForegroundColor Yellow
+      exit 1
+    }
+    Write-Host "Updating gralph..." -ForegroundColor Cyan
+    $before = (& git -C $installRoot rev-parse --short HEAD 2>$null)
+    & git -C $installRoot pull --ff-only 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "[WARN] Fast-forward failed, resetting to origin/main..." -ForegroundColor Yellow
+      & git -C $installRoot fetch origin 2>$null | Out-Null
+      & git -C $installRoot reset --hard origin/main 2>$null | Out-Null
+    }
+    $after = (& git -C $installRoot rev-parse --short HEAD 2>$null)
+    if ($before -eq $after) {
+      Write-Host "[OK] Already up to date (${after})" -ForegroundColor Green
+    } else {
+      Write-Host "[OK] Updated ${before} -> ${after}" -ForegroundColor Green
+    }
+  } finally {
+    $ErrorActionPreference = $prevPref
+  }
+}
+
+# ============================================
+# EARLY EXIT FOR HELP / VERSION / UPDATE
 # ============================================
 
 if ($args.Count -gt 0) {
   switch ($args[0]) {
     { $_ -in @('-h','--help','-help','--show-help','-show-help') } { Show-Help; exit 0 }
     { $_ -in @('--version','-version','--show-version','-show-version') } { Show-Version; exit 0 }
+    '--update' { Self-Update; exit 0 }
   }
 }
 
