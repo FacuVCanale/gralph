@@ -1,13 +1,13 @@
 #!/usr/bin/env pwsh
 # ============================================
 # GRALPH Installer
-# Usage: irm https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
 # ============================================
 
 # Use Continue so git stderr doesn't terminate (PS 5.x treats it as error)
 $ErrorActionPreference = "Continue"
 
-$REPO = "https://github.com/FacuVCanale/gralph.git"
+$REPO = "https://github.com/frizynn/gralph.git"
 $INSTALL_DIR = Join-Path $HOME ".gralph"
 $BIN_DIR = Join-Path $INSTALL_DIR "scripts\gralph"
 

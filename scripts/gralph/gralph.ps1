@@ -1926,7 +1926,7 @@ function Self-Update {
     $gitDir = Join-Path $installRoot ".git"
     if (-not (Test-Path $gitDir)) {
       Write-Host "[ERROR] Not a git installation. Re-install with:" -ForegroundColor Red
-      Write-Host "  irm https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.ps1 | iex" -ForegroundColor Yellow
+      Write-Host "  irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex" -ForegroundColor Yellow
       exit 1
     }
     Write-Host "Updating gralph..." -ForegroundColor Cyan

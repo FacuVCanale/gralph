@@ -22,13 +22,13 @@ GRALPH reads a PRD, generates tasks with dependencies, and runs multiple agents 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
 ```
 
 Restart your terminal after installing. Then `gralph` is available globally.

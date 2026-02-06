@@ -528,7 +528,7 @@ self_update() {
 
   if [[ ! -d "$install_root/.git" ]]; then
     log_error "Not a git installation. Re-install with:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.sh | bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | bash"
     exit 1
   fi
 
