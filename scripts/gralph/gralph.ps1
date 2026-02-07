@@ -1138,12 +1138,27 @@ Save the file as $OutputFile.
 Do NOT implement anything - only create the tasks.yaml file.
 "@
   $tmpfile = [IO.Path]::GetTempFileName()
-  Execute-AiPrompt $prompt $tmpfile
-  Remove-Item $tmpfile -Force -ErrorAction SilentlyContinue
+  $logfile = [IO.Path]::GetTempFileName()
+  Execute-AiPrompt $prompt $tmpfile "log=$logfile"
+  
   if (-not (Test-Path $OutputFile)) {
     Log-Error "Metadata agent failed to create $OutputFile"
+    if (Test-Path $logfile) {
+      Log-Error "--- AGENT LOG START ---"
+      Get-Content $logfile -ErrorAction SilentlyContinue | Write-Host
+      Log-Error "--- AGENT LOG END ---"
+      Remove-Item $logfile -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $tmpfile) {
+      Log-Error "--- AGENT OUTPUT START ---"
+      Get-Content $tmpfile -ErrorAction SilentlyContinue | Write-Host
+      Log-Error "--- AGENT OUTPUT END ---"
+    }
+    Remove-Item $tmpfile -Force -ErrorAction SilentlyContinue
     return $false
   }
+  Remove-Item $tmpfile -Force -ErrorAction SilentlyContinue
+  if (Test-Path $logfile) { Remove-Item $logfile -Force -ErrorAction SilentlyContinue }
   Log-Success "Generated $OutputFile"
   return $true
 }
@@ -1588,6 +1603,9 @@ function Parse-AiResult {
 
 function Check-ForErrors {
   param([string]$Result)
+  if ($Result -match '"error":"rate_limit"' -or $Result -match "You've hit your limit") {
+    return "Rate limit exceeded. Please try again later or switch AI engine."
+  }
   if ($Result -match '"type":"error"') {
     $line = ($Result -split "`n" | Where-Object { $_ -match '"type":"error"' } | Select-Object -First 1)
     try {
