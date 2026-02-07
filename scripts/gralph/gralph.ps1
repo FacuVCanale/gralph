@@ -187,7 +187,7 @@ function Is-ExternalFailureError {
   param([string]$Message)
   if (-not $Message) { return $false }
   $lower = $Message.ToLowerInvariant()
-  return ($lower -match 'buninstallfailederror|command not found|enoent|eacces|permission denied|network|timeout|tls|econnreset|etimedout|lockfile|install|certificate|ssl')
+  return ($lower -match 'buninstallfailederror|command not found|enoent|eacces|permission denied|network|timeout|tls|econnreset|etimedout|lockfile|install|certificate|ssl|rate limit|quota|429|too many requests')
 }
 
 function Persist-TaskLog {
@@ -565,7 +565,7 @@ function Check-Requirements {
             else { $newArgs += $_ }
          }
          if (-not $hasOutput) { $newArgs += "-o=json" }
-         & yq @newArgs
+         try { & yq @newArgs 2>$null } catch { }
        }
        Log-Info "Defined jq alias using yq"
     } else {
@@ -872,7 +872,7 @@ function Validate-TasksYamlV1 {
     return $false
   }
 
-  $hasTasks = Normalize-YqScalar (& yq -r 'has("tasks")' $script:PRD_FILE 2>$null)
+  $hasTasks = Normalize-YqScalar (& yq -r '.tasks != null' $script:PRD_FILE 2>$null)
   if ($hasTasks -ne "true") {
      Log-Error "tasks.yaml validation failed: Missing 'tasks' array"
      return $false
@@ -1784,6 +1784,8 @@ Focus only on implementing: $taskTitle
     if ($result) {
       $errMsg = Check-ForErrors $result
       if (-not $errMsg) { $success = $true; break }
+      Add-Content -Path $LogFile -Value "[WARN] Attempt $($retry + 1) failed: $errMsg"
+      if ($script:VERBOSE) { Write-Host "  ${script:YELLOW}[WARN]${script:RESET} Agent $AgentNum attempt $($retry + 1) failed: $errMsg" }
     }
     $retry++
     Start-Sleep -Seconds $script:RETRY_DELAY
@@ -1930,7 +1932,22 @@ function Run-ParallelTasksYamlV1 {
     $running = Scheduler-CountRunning
     if ($pending -eq 0 -and $running -eq 0) { break }
     if (Scheduler-CheckDeadlock) {
-      Log-Error "DEADLOCK: No progress possible"
+      $hasFailedDeps = $false
+      foreach ($id in $script:SCHED_STATE.Keys) {
+        if ($script:SCHED_STATE[$id] -eq "pending") {
+           foreach ($dep in (Get-TaskDepsByIdYamlV1 $id)) {
+             if ($script:SCHED_STATE[$dep] -eq "failed") { $hasFailedDeps = $true; break }
+           }
+        }
+        if ($hasFailedDeps) { break }
+      }
+
+      if ($hasFailedDeps) {
+        Log-Error "Workflow halted: Dependencies failed, preventing further progress."
+      } else {
+        Log-Error "DEADLOCK: No progress possible (cycle or mutex contention)"
+      }
+      
       Write-Host ""
       Write-Host "${script:RED}Blocked tasks:${script:RESET}"
       foreach ($id in $script:SCHED_STATE.Keys) {
