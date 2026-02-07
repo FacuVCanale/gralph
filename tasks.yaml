@@ -1,0 +1,179 @@
+version: 1
+branchName: gralph/terminal-dashboard
+tasks:
+  - id: SETUP-001
+    title: "Initialize Python project with pyproject.toml, Textual, Rich, PyYAML, watchfiles, Click dependencies"
+    completed: true
+    dependsOn: []
+    mutex: ["lockfile"]
+    touches: ["gralph-dashboard/pyproject.toml", "gralph-dashboard/src/gralph_dashboard/__init__.py"]
+    contracts:
+      produces: ["contract:project-structure"]
+      consumes: []
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && pip install -e '.[dev]'"]
+  - id: SETUP-002
+    title: "Create data models for Task, TaskReport, ReviewReport, and RunState"
+    completed: true
+    dependsOn: ["SETUP-001"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/models/task.py", "gralph-dashboard/src/gralph_dashboard/models/report.py", "gralph-dashboard/src/gralph_dashboard/models/run.py"]
+    contracts:
+      produces: ["contract:data-models"]
+      consumes: ["contract:project-structure"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/test_models.py"]
+  - id: SETUP-003
+    title: "Build parsers for tasks.yaml v1, task report JSON, and review report JSON"
+    completed: true
+    dependsOn: ["SETUP-002"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/parsers/tasks_yaml.py", "gralph-dashboard/src/gralph_dashboard/parsers/report_json.py", "gralph-dashboard/src/gralph_dashboard/parsers/review_json.py"]
+    contracts:
+      produces: ["contract:parsers"]
+      consumes: ["contract:data-models"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/test_parsers.py"]
+  - id: SETUP-004
+    title: "Implement topological layered graph layout algorithm (Sugiyama-style) for DAG positioning"
+    completed: true
+    dependsOn: ["SETUP-002"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/layout/graph_layout.py"]
+    contracts:
+      produces: ["contract:graph-layout"]
+      consumes: ["contract:data-models"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/test_layout.py"]
+  - id: SETUP-005
+    title: "Create CLI entry point with --watch and --review modes, prd-id argument, and auto-detection"
+    completed: true
+    dependsOn: ["SETUP-003"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/cli.py"]
+    contracts:
+      produces: ["contract:cli"]
+      consumes: ["contract:parsers"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m gralph_dashboard.cli --help"]
+  - id: US-001
+    title: "Render task DAG as interactive node graph widget with Unicode box-drawing and directed edges"
+    completed: true
+    dependsOn: ["SETUP-004", "SETUP-003"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/dag_graph.py"]
+    contracts:
+      produces: ["contract:dag-widget"]
+      consumes: ["contract:graph-layout", "contract:parsers"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k dag"]
+  - id: US-002
+    title: "Add live status coloring on graph nodes with animated spinners and status icons"
+    completed: true
+    dependsOn: ["US-001"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/dag_graph.py"]
+    contracts:
+      produces: []
+      consumes: ["contract:dag-widget"]
+    mergeNotes: "Modifies dag_graph.py — merge carefully with US-001 base"
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k status"]
+  - id: US-003
+    title: "Build task detail panel widget with full task info, engine, tokens, cost, and blocking info"
+    completed: true
+    dependsOn: ["SETUP-003"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/task_detail.py"]
+    contracts:
+      produces: ["contract:detail-widget"]
+      consumes: ["contract:parsers", "contract:data-models"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k detail"]
+  - id: US-004
+    title: "Build live log streaming panel widget with auto-scroll, tail, and ANSI color preservation"
+    completed: true
+    dependsOn: ["SETUP-001"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/log_viewer.py"]
+    contracts:
+      produces: ["contract:log-widget"]
+      consumes: ["contract:project-structure"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k log"]
+  - id: US-005
+    title: "Build persistent statistics bar widget with token counts, cost, and per-engine breakdown"
+    completed: true
+    dependsOn: ["SETUP-003"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/stats_bar.py"]
+    contracts:
+      produces: ["contract:stats-widget"]
+      consumes: ["contract:parsers", "contract:data-models"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k stats"]
+  - id: US-006
+    title: "Build run history browser with prd-id listing, run picker, and review-report display"
+    completed: true
+    dependsOn: ["SETUP-005", "US-003"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/run_picker.py"]
+    contracts:
+      produces: ["contract:run-picker-widget"]
+      consumes: ["contract:cli", "contract:detail-widget"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k run_picker"]
+  - id: US-007
+    title: "Add blocking explanation view with dependency and mutex conflict details in task panel"
+    completed: true
+    dependsOn: ["US-003", "US-002"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/task_detail.py", "gralph-dashboard/src/gralph_dashboard/widgets/dag_graph.py"]
+    contracts:
+      produces: []
+      consumes: ["contract:detail-widget", "contract:dag-widget"]
+    mergeNotes: "Extends task_detail.py and dag_graph.py — merge with US-002 and US-003 changes"
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k blocking"]
+  - id: US-008
+    title: "Add keyboard navigation, keybinding help overlay, search, filter, and panel focus cycling"
+    completed: true
+    dependsOn: ["US-001", "US-003", "US-004", "US-005"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/help_overlay.py", "gralph-dashboard/src/gralph_dashboard/app.py"]
+    contracts:
+      produces: ["contract:keybindings"]
+      consumes: ["contract:dag-widget", "contract:detail-widget", "contract:log-widget", "contract:stats-widget"]
+    mergeNotes: "app.py is the main integration point — merge last"
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k keybind"]
+  - id: US-009
+    title: "Implement filesystem watcher for live monitoring with auto-update of node statuses and log detection"
+    completed: true
+    dependsOn: ["SETUP-003", "US-002"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/watchers/file_watcher.py"]
+    contracts:
+      produces: ["contract:file-watcher"]
+      consumes: ["contract:parsers"]
+    mergeNotes: ""
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k watcher"]
+  - id: US-010
+    title: "Add graph zoom, layout controls, minimap, viewport panning, and fit-to-view"
+    completed: true
+    dependsOn: ["US-001"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/widgets/dag_graph.py"]
+    contracts:
+      produces: []
+      consumes: ["contract:dag-widget"]
+    mergeNotes: "Modifies dag_graph.py — merge with US-002 changes"
+    verify: ["cd gralph-dashboard && python -m pytest tests/ -k zoom"]
+  - id: INT-001
+    title: "Integrate all widgets into main Textual App with layout, watch mode, review mode, and resize handling"
+    completed: false
+    dependsOn: ["US-008", "US-006", "US-007", "US-009", "US-010"]
+    mutex: []
+    touches: ["gralph-dashboard/src/gralph_dashboard/app.py", "gralph-dashboard/src/gralph_dashboard/cli.py"]
+    contracts:
+      produces: []
+      consumes: ["contract:keybindings", "contract:run-picker-widget", "contract:file-watcher"]
+    mergeNotes: "Final integration — merge all widget branches first"
+    verify: ["cd gralph-dashboard && python -m pytest tests/", "cd gralph-dashboard && python -m mypy src/"]
