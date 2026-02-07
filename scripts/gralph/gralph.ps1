@@ -153,7 +153,7 @@ function Normalize-YqScalar {
 }
 
 function Resolve-RepoRoot {
-  $root = & git rev-parse --show-toplevel 2>$null
+  $root = (cmd /c "git rev-parse --show-toplevel 2>nul")
   if ($LASTEXITCODE -ne 0 -or -not $root) { return (Get-Location).Path }
   return $root.Trim()
 }
@@ -1155,8 +1155,8 @@ function Get-TaskMergeNotesYamlV1 {
 function Save-TaskReport {
   param([string]$TaskId, [string]$Branch, [string]$WorktreeDir, [string]$Status)
   if (-not $script:ARTIFACTS_DIR) { return }
-  $changedFiles = (& git -C $WorktreeDir diff --name-only "$($script:BASE_BRANCH)..HEAD" 2>$null) -join "," | ForEach-Object { $_.Trim() }
-  $commitCount = & git -C $WorktreeDir rev-list --count "$($script:BASE_BRANCH)..HEAD" 2>$null
+  $changedFiles = (cmd /c "git -C `"$WorktreeDir`" diff --name-only `"$($script:BASE_BRANCH)..HEAD`" 2>nul") -join "," | ForEach-Object { $_.Trim() }
+  $commitCount = (cmd /c "git -C `"$WorktreeDir`" rev-list --count `"$($script:BASE_BRANCH)..HEAD`" 2>nul")
   if (-not $commitCount) { $commitCount = 0 }
   $safeBranch = Json-Escape $Branch
   $safeChanged = Json-Escape $changedFiles
@@ -1193,10 +1193,10 @@ function Create-IntegrationBranch {
 
 function Merge-BranchWithFallback {
   param([string]$Branch, [string]$TaskId)
-  & git merge --no-edit $Branch >$null 2>$null
+  cmd /c "git merge --no-edit $Branch >nul 2>&1"
   if ($LASTEXITCODE -eq 0) { return $true }
   Log-Warn "Conflict merging $Branch, attempting AI resolution..."
-  $conflictedFiles = & git diff --name-only --diff-filter=U 2>$null
+  $conflictedFiles = (cmd /c "git diff --name-only --diff-filter=U 2>nul")
   $mergeNotes = Get-TaskMergeNotesYamlV1 $TaskId
   $prompt = @"
 Resolve git merge conflicts in these files:
@@ -1218,10 +1218,10 @@ git commit --no-edit
   $tmpfile = [IO.Path]::GetTempFileName()
   Execute-AiPrompt $prompt $tmpfile
   Remove-Item $tmpfile -Force -ErrorAction SilentlyContinue
-  $stillConflicted = & git diff --name-only --diff-filter=U 2>$null
+  $stillConflicted = (cmd /c "git diff --name-only --diff-filter=U 2>nul")
   if ($stillConflicted) {
     Log-Error "AI failed to resolve conflicts in $Branch"
-    & git merge --abort 2>$null | Out-Null
+    cmd /c "git merge --abort >nul 2>&1"
     return $false
   }
   Log-Success "AI resolved conflicts in $Branch"
@@ -1235,7 +1235,7 @@ git commit --no-edit
 function Run-ReviewerAgent {
   if (-not $script:ARTIFACTS_DIR -or -not $script:INTEGRATION_BRANCH) { return $true }
   Log-Info "Running semantic reviewer..."
-  $diffSummary = & git diff --stat "$($script:BASE_BRANCH)..$($script:INTEGRATION_BRANCH)" 2>$null | Select-Object -Last 20
+  $diffSummary = (cmd /c "git diff --stat `"$($script:BASE_BRANCH)..$($script:INTEGRATION_BRANCH)`" 2>nul") | Select-Object -Last 20
   $reportsSummary = ""
   $reportFiles = Get-ChildItem -Path (Join-Path $script:ARTIFACTS_DIR "reports") -Filter "*.json" -ErrorAction SilentlyContinue
   foreach ($report in $reportFiles) { $reportsSummary += "`n$(Get-Content $report.FullName -Raw)" }
@@ -1317,10 +1317,11 @@ function Ensure-RunBranch {
   if (-not $script:RUN_BRANCH) { return }
   $baseRef = $script:BASE_BRANCH
   if (-not $baseRef) {
-    $baseRef = (& git rev-parse --abbrev-ref HEAD 2>$null) -join ""
+    $baseRef = (cmd /c "git rev-parse --abbrev-ref HEAD 2>nul") -join ""
     if (-not $baseRef) { $baseRef = "main" }
   }
-  $exists = & git show-ref --verify --quiet "refs/heads/$($script:RUN_BRANCH)"
+  cmd /c "git show-ref --verify --quiet `"refs/heads/$($script:RUN_BRANCH)`" >nul 2>&1"
+  $exists = ($LASTEXITCODE -eq 0)
   if ($LASTEXITCODE -eq 0) {
     Log-Info "Switching to run branch: $($script:RUN_BRANCH)"
     # Use cmd /c to suppress stderr noise
@@ -1339,9 +1340,9 @@ function Create-TaskBranch {
   param([string]$Task)
   $branchName = "gralph/$(Slugify $Task)"
   Log-Debug "Creating branch: $branchName from $($script:BASE_BRANCH)"
-  $stashBefore = (& git stash list -1 --format='%gd %s' 2>$null) -join ""
+  $stashBefore = (cmd /c "git stash list -1 --format='%gd %s' 2>nul") -join ""
   cmd /c "git stash push -m `"gralph-autostash`" >nul 2>&1"
-  $stashAfter = (& git stash list -1 --format='%gd %s' 2>$null) -join ""
+  $stashAfter = (cmd /c "git stash list -1 --format='%gd %s' 2>nul") -join ""
   $stashed = $false
   if ($stashAfter -and $stashAfter -ne $stashBefore -and $stashAfter -match "gralph-autostash") { $stashed = $true }
   
@@ -1360,7 +1361,7 @@ function Create-PullRequest {
   param([string]$Branch, [string]$Task, [string]$Body = "Automated PR created by GRALPH")
   $draftFlag = if ($script:PR_DRAFT) { "--draft" } else { "" }
   Log-Info "Creating pull request for $Branch..."
-  & git push -u origin $Branch >$null 2>$null
+  cmd /c "git push -u origin $Branch >nul 2>&1"
   if ($LASTEXITCODE -ne 0) {
     Log-Warn "Failed to push branch $Branch"
     return ""
@@ -1375,7 +1376,7 @@ function Create-PullRequest {
 }
 
 function Return-ToBaseBranch {
-  if ($script:BRANCH_PER_TASK) { & git checkout $script:BASE_BRANCH >$null 2>$null | Out-Null }
+  if ($script:BRANCH_PER_TASK) { cmd /c "git checkout $script:BASE_BRANCH >nul 2>&1" }
 }
 
 # ============================================
@@ -1651,7 +1652,7 @@ function Create-AgentWorktree {
 
 function Check-WorktreeStatus {
   param([string]$WorktreeDir)
-  $status = & git -C $WorktreeDir status --porcelain 2>$null
+  $status = (cmd /c "git -C `"$WorktreeDir`" status --porcelain 2>nul")
   return (-not $status)
 }
 
@@ -1659,7 +1660,7 @@ function Cleanup-AgentWorktree {
   param([string]$WorktreeDir, [string]$BranchName, [string]$LogFile)
   $dirty = $false
   if (Test-Path $WorktreeDir) {
-     $status = & git -C $WorktreeDir status --porcelain 2>$null
+     $status = (cmd /c "git -C `"$WorktreeDir`" status --porcelain 2>nul")
      if ($status) { $dirty = $true }
   }
   if ($dirty) {
@@ -1768,7 +1769,7 @@ Focus only on implementing: $taskTitle
          cmd /c "$cmdCommit 2>>`"$LogFile`""
       }
 
-      $commitCount = & git -C $worktreeDir rev-list --count "$($script:BASE_BRANCH)..HEAD" 2>$null
+      $commitCount = (cmd /c "git -C `"$worktreeDir`" rev-list --count `"$($script:BASE_BRANCH)..HEAD`" 2>nul")
     if (-not $commitCount -or [int]$commitCount -eq 0) {
       Add-Content -Path $LogFile -Value "[ERROR] Task failed: No commits generated by agent (and auto-commit failed or found no changes)."
       "failed" | Set-Content -Path $StatusFile
@@ -1779,7 +1780,7 @@ Focus only on implementing: $taskTitle
     if ($script:CREATE_PR) {
       Push-Location $worktreeDir
       try {
-        & git push -u origin $branchName 2>>$LogFile | Out-Null
+        cmd /c "git push -u origin $branchName 2>>`"$LogFile`""
         $draftArg = $null
         if ($script:PR_DRAFT) { $draftArg = "--draft" }
         if ($draftArg) {
@@ -1790,7 +1791,7 @@ Focus only on implementing: $taskTitle
       } finally { Pop-Location }
     }
     if ($script:ARTIFACTS_DIR) {
-      $changedFiles = (& git -C $worktreeDir diff --name-only "$($script:BASE_BRANCH)..HEAD" 2>$null) -join "," | ForEach-Object { $_.Trim() }
+      $changedFiles = (cmd /c "git -C `"$worktreeDir`" diff --name-only `"$($script:BASE_BRANCH)..HEAD`" 2>nul") -join "," | ForEach-Object { $_.Trim() }
       $progressNotes = ""
       $progressPath = Join-Path $worktreeDir "scripts/gralph/progress.txt"
       if (Test-Path $progressPath) { $progressNotes = (Get-Content $progressPath | Select-Object -Last 50) -join "`n" }
@@ -1837,7 +1838,7 @@ function Run-ParallelTasksYamlV1 {
   $script:WORKTREE_BASE = Join-Path ([IO.Path]::GetTempPath()) ("gralph-" + [guid]::NewGuid().ToString())
   New-Item -ItemType Directory -Force -Path $script:WORKTREE_BASE | Out-Null
   if (-not $script:BASE_BRANCH) {
-    $script:BASE_BRANCH = (& git rev-parse --abbrev-ref HEAD 2>$null) -join ""
+    $script:BASE_BRANCH = (cmd /c "git rev-parse --abbrev-ref HEAD 2>nul") -join ""
     if (-not $script:BASE_BRANCH) { $script:BASE_BRANCH = "main" }
   }
   $env:BASE_BRANCH = $script:BASE_BRANCH
@@ -2223,7 +2224,7 @@ function Show-DryRunSummary {
 }
 
 function Ensure-CleanGitState {
-  $gitDir = & git rev-parse --git-dir 2>$null
+  $gitDir = (cmd /c "git rev-parse --git-dir 2>nul")
   if ($LASTEXITCODE -ne 0) { return }
   
   if (Test-Path (Join-Path $gitDir "MERGE_HEAD")) {
@@ -2245,7 +2246,7 @@ function Cleanup-StaleGitState {
   cmd /c "git worktree prune >nul 2>&1"
   
   # Delete stale agent branches
-  $branches = & git branch --list "gralph/agent-*" 2>$null
+  $branches = (cmd /c "git branch --list `"gralph/agent-*`" 2>nul")
   if ($branches) {
     foreach ($branch in $branches) {
       # Clean up branch name: remove leading *, +, and whitespace
@@ -2253,7 +2254,7 @@ function Cleanup-StaleGitState {
       $b = $b.Trim()
       if ($b) {
         # Check if branch is checked out in a worktree
-        $worktree = & git worktree list 2>$null | Select-String "\[$b\]"
+        $worktree = (cmd /c "git worktree list 2>nul") | Select-String "\[$b\]"
         if ($worktree) {
             # Extract path and force remove worktree first
             $wtPath = ($worktree.ToString() -split '\s+')[0]
