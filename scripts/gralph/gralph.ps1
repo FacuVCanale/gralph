@@ -175,10 +175,11 @@ function Ensure-ParentDirWritable {
 function Extract-ErrorFromLog {
   param([string]$LogFile)
   if (-not (Test-Path $LogFile)) { return "" }
-  $lines = Get-Content $LogFile
-  if (-not $lines) { return "" }
-  $nonDebug = $lines | Where-Object { $_ -notmatch '^\[DEBUG\]' }
-  if ($nonDebug) { return $nonDebug[-1] }
+  $content = Get-Content $LogFile -Raw
+  if (-not $content) { return "" }
+  $lines = $content -split "`r?`n"
+  $nonDebug = @($lines | Where-Object { $_ -notmatch '^\[DEBUG\]' -and $_.Trim() -ne "" })
+  if ($nonDebug.Count -gt 0) { return $nonDebug[-1] }
   return $lines[-1]
 }
 
@@ -192,7 +193,7 @@ function Is-ExternalFailureError {
 function Persist-TaskLog {
   param([string]$TaskId, [string]$LogFile)
   if (-not $script:ARTIFACTS_DIR) { return }
-  $reportsDir = Join-Path $script:ORIGINAL_DIR $script:ARTIFACTS_DIR "reports"
+  $reportsDir = Join-Path (Join-Path $script:ORIGINAL_DIR $script:ARTIFACTS_DIR) "reports"
   New-Item -ItemType Directory -Force -Path $reportsDir | Out-Null
   if (Test-Path $LogFile -PathType Leaf) {
     Copy-Item $LogFile -Destination (Join-Path $reportsDir "$TaskId.log") -Force -ErrorAction SilentlyContinue
@@ -208,7 +209,7 @@ function Write-FailedTaskReport {
     [string]$Branch
   )
   if (-not $script:ARTIFACTS_DIR) { return }
-  $reportsDir = Join-Path $script:ORIGINAL_DIR $script:ARTIFACTS_DIR "reports"
+  $reportsDir = Join-Path (Join-Path $script:ORIGINAL_DIR $script:ARTIFACTS_DIR) "reports"
   New-Item -ItemType Directory -Force -Path $reportsDir | Out-Null
   $safeTitle = Json-Escape $TaskTitle
   $safeError = Json-Escape $ErrorMsg
@@ -223,7 +224,7 @@ function Write-FailedTaskReport {
   "errorMessage": "$safeError",
   "commits": 0,
   "changedFiles": "",
-  "timestamp": "$(Get-Date -AsUTC -Format yyyy-MM-ddTHH:mm:ssZ)"
+  "timestamp": "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
 }
 "@
   $json | Set-Content -Path (Join-Path $reportsDir "$TaskId.json")
@@ -248,8 +249,8 @@ function External-FailGracefulStop {
   }
   if ((Scheduler-CountRunning) -gt 0) {
     Log-Warn "External failure timeout reached; terminating remaining tasks."
-    foreach ($pid in $script:ACTIVE_PIDS) {
-      try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch { }
+    foreach ($procId in $script:ACTIVE_PIDS) {
+      try { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue } catch { }
     }
     Start-Sleep -Seconds 2
     foreach ($idx in 0..($script:ACTIVE_PIDS.Count - 1)) {
@@ -523,8 +524,8 @@ function Parse-Args {
         if (-not $script:RESUME_PRD_ID) { Log-Error "--resume requires a prd-id"; exit 1 }
         $i++
       }
-      "-v" { $script:VERBOSE = $true }
-      "--verbose" { $script:VERBOSE = $true }
+      "-v" { $script:VERBOSE = $false }
+      "--verbose" { $script:VERBOSE = $false }
       "--update" { Self-Update; exit 0 }
       "-h" { Show-Help; exit 0 }
       "--help" { Show-Help; exit 0 }
@@ -554,11 +555,27 @@ function Check-Requirements {
     $missingRequired += "yq (https://github.com/mikefarah/yq)"
   }
   if (-not (Get-Command jq -ErrorAction SilentlyContinue)) {
-    $missingRequired += "jq (https://jqlang.github.io/jq/download/)"
+    if (Get-Command yq -ErrorAction SilentlyContinue) {
+       function global:jq { 
+         $newArgs = @("-p=json")
+         $hasOutput = $false
+         $args | ForEach-Object {
+            if ($_ -eq "-c") { $newArgs += "-o=json"; $newArgs += "-I=0"; $hasOutput = $true }
+            elseif ($_ -eq "-r") { $newArgs += "-r"; $hasOutput = $true }
+            else { $newArgs += $_ }
+         }
+         if (-not $hasOutput) { $newArgs += "-o=json" }
+         & yq @newArgs
+       }
+       Log-Info "Defined jq alias using yq"
+    } else {
+       $missingRequired += "jq (https://jqlang.github.io/jq/download/)"
+    }
   }
   if ($missingRequired.Count -gt 0) {
     Log-Warn "Missing required dependencies: $($missingRequired -join ', ')"
     Log-Error "Install required dependencies and re-run."
+    Start-Sleep -Seconds 1
     exit 1
   }
 
@@ -665,8 +682,8 @@ function Cleanup {
   # Kill background processes
   if ($script:monitor_pid) { try { Stop-Process -Id $script:monitor_pid -Force -ErrorAction SilentlyContinue } catch { } }
   if ($script:ai_pid) { try { Stop-Process -Id $script:ai_pid -Force -ErrorAction SilentlyContinue } catch { } }
-  foreach ($pid in $script:parallel_pids) {
-    try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch { }
+  foreach ($procId in $script:parallel_pids) {
+    try { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue } catch { }
   }
   if ($script:tmpfile -and (Test-Path $script:tmpfile)) { Remove-Item $script:tmpfile -Force }
   if ($script:CODEX_LAST_MESSAGE_FILE -and (Test-Path $script:CODEX_LAST_MESSAGE_FILE)) { Remove-Item $script:CODEX_LAST_MESSAGE_FILE -Force }
@@ -754,16 +771,50 @@ function Get-TaskIdYamlV1 {
 }
 
 function Get-AllTaskIdsYamlV1 {
-  & yq -r '.tasks[].id' $script:PRD_FILE 2>$null
+  $out = & yq -r '.tasks[].id' $script:PRD_FILE 2>$null
+  if ($null -eq $out) { return @() }
+  
+  Log-Debug "Get-AllTaskIdsYamlV1: Raw output type: $($out.GetType().FullName)"
+  if ($out -is [System.Collections.ICollection]) {
+     Log-Debug "Get-AllTaskIdsYamlV1: Raw output count: $($out.Count)"
+  }
+  
+  if ($out -is [string]) {
+    $out = $out -split "`r?`n"
+  }
+  
+  $final = $out | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+  Log-Debug "Get-AllTaskIdsYamlV1: Final count: $($final.Count)"
+  if ($final.Count -gt 0) {
+     Log-Debug "Get-AllTaskIdsYamlV1: First item: '$($final[0])'"
+  }
+  return $final
 }
 
 function Get-PendingTaskIdsYamlV1 {
-  & yq -r '.tasks[] | select(.completed != true) | .id' $script:PRD_FILE 2>$null
+  $out = & yq -r '.tasks[] | select(.completed != true) | .id' $script:PRD_FILE 2>$null
+  if ($null -eq $out) { return @() }
+  if ($out -is [string]) { return $out -split "`r?`n" }
+  return $out
 }
 
 function Get-TaskTitleByIdYamlV1 {
   param([string]$Id)
-  Invoke-YqWithEnv "GRALPH_TASK_ID" $Id '.tasks[] | select(.id == strenv(GRALPH_TASK_ID)) | .title'
+  $Id = $Id.Trim()
+  Log-Debug "Get-TaskTitleByIdYamlV1: Id='$Id'"
+  $res = Invoke-YqWithEnv "GRALPH_TASK_ID" $Id '.tasks[] | select(.id == strenv(GRALPH_TASK_ID)) | .title'
+  if ($null -eq $res -or $res -eq "") {
+     Log-Debug "Get-TaskTitleByIdYamlV1: Env approach failed for '$Id', trying fallback..."
+     $q = '.tasks[] | select(.id == "' + $Id + '") | .title'
+     $res = (& yq -r $q $script:PRD_FILE 2>&1)
+     if ($res -is [System.Object[]]) { $res = $res -join "`n" }
+     if ($res -match "^Error") {
+        Log-Debug "Get-TaskTitleByIdYamlV1: Fallback failed: $res"
+        return ""
+     }
+  }
+  if ($null -eq $res) { return "" }
+  return $res
 }
 
 function Get-TaskDepsByIdYamlV1 {
@@ -1108,7 +1159,7 @@ function Save-TaskReport {
   "status": "$Status",
   "commits": $commitCount,
   "changedFiles": "$safeChanged",
-  "timestamp": "$(Get-Date -AsUTC -Format yyyy-MM-ddTHH:mm:ssZ)"
+  "timestamp": "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
 }
 "@
   $json | Set-Content -Path (Join-Path $script:ARTIFACTS_DIR "reports/$TaskId.json")
@@ -1258,7 +1309,7 @@ function Ensure-RunBranch {
   $exists = & git show-ref --verify --quiet "refs/heads/$($script:RUN_BRANCH)"
   if ($LASTEXITCODE -eq 0) {
     Log-Info "Switching to run branch: $($script:RUN_BRANCH)"
-    & git checkout $script:RUN_BRANCH >$null 2>$null
+    try { & git checkout $script:RUN_BRANCH 2>&1 | Out-Null } catch { }
   } else {
     Log-Info "Creating run branch: $($script:RUN_BRANCH) from $baseRef"
     & git checkout $baseRef >$null 2>$null | Out-Null
@@ -1548,14 +1599,31 @@ function Create-AgentWorktree {
     & git worktree prune 2>$null | Out-Null
     $existing = & git worktree list 2>$null | Select-String "\[$branchName\]" | ForEach-Object { ($_ -split '\s+')[0] }
     if ($existing) {
-      Write-Error "Removing existing worktree for $branchName at $existing"
+      Log-Debug "Removing existing worktree for $branchName at $existing"
       & git worktree remove --force $existing 2>$null | Out-Null
       & git worktree prune 2>$null | Out-Null
     }
-    & git branch -D $branchName 2>$null | Out-Null
-    & git branch $branchName $script:BASE_BRANCH 2>$null | Out-Null
+    try { & git branch -D $branchName 2>&1 | Out-Null } catch { }
+    try { & git branch $branchName $script:BASE_BRANCH 2>&1 | Out-Null } catch { 
+       Log-Error "Failed to create branch $branchName from $script:BASE_BRANCH"
+       throw "Failed to create branch $branchName from $script:BASE_BRANCH"
+    }
     Remove-Item $worktreeDir -Recurse -Force -ErrorAction SilentlyContinue
-    & git worktree add $worktreeDir $branchName 2>$null | Out-Null
+    if (Test-Path $worktreeDir) {
+       Log-Warn "Worktree directory still exists after removal: $worktreeDir"
+       Remove-Item $worktreeDir -Recurse -Force
+    }
+    
+    # Use cmd /c to avoid PowerShell NativeCommandError on stderr output
+    $gitCmd = "git worktree add --force `"$worktreeDir`" `"$branchName`""
+    $err = (cmd /c "$gitCmd 2>&1")
+    $exitCode = $LASTEXITCODE
+    
+    if ($exitCode -ne 0) {
+       $errStr = $err -join "`n"
+       Log-Error "Failed to add worktree (Exit code $exitCode). Git output: $errStr"
+       throw "Failed to add worktree $worktreeDir for branch $branchName. Git output: $errStr"
+    }
   } finally {
     Pop-Location
   }
@@ -1590,7 +1658,16 @@ function Run-ParallelAgentYamlV1 {
   "setting up" | Set-Content -Path $StatusFile
   Add-Content -Path $LogFile -Value "Agent $AgentNum starting for task: $TaskId - $taskTitle"
   Add-Content -Path $LogFile -Value "[DEBUG] AI_ENGINE=$($script:AI_ENGINE) OPENCODE_MODEL=$($script:OPENCODE_MODEL)"
-  $worktreeInfo = Create-AgentWorktree $TaskId $AgentNum
+  
+  try {
+    $worktreeInfo = Create-AgentWorktree $TaskId $AgentNum
+  } catch {
+    Add-Content -Path $LogFile -Value "[ERROR] Failed to create worktree: $_"
+    "failed" | Set-Content -Path $StatusFile
+    "0 0" | Set-Content -Path $OutputFile
+    return $false
+  }
+  
   $worktreeDir = $worktreeInfo.Split("|")[0]
   $branchName = $worktreeInfo.Split("|")[1]
   if (-not (Test-Path $worktreeDir)) {
@@ -1664,7 +1741,7 @@ Focus only on implementing: $taskTitle
       $safeTitle = Json-Escape $taskTitle
       $safeBranch = Json-Escape $branchName
       $safeChanged = Json-Escape $changedFiles
-      $reportsDir = Join-Path $script:ORIGINAL_DIR $script:ARTIFACTS_DIR "reports"
+      $reportsDir = Join-Path (Join-Path $script:ORIGINAL_DIR $script:ARTIFACTS_DIR) "reports"
       New-Item -ItemType Directory -Force -Path $reportsDir | Out-Null
       $json = @"
 {
@@ -1675,7 +1752,7 @@ Focus only on implementing: $taskTitle
   "commits": $commitCount,
   "changedFiles": "$safeChanged",
   "progressNotes": "$safeNotes",
-  "timestamp": "$(Get-Date -AsUTC -Format yyyy-MM-ddTHH:mm:ssZ)"
+  "timestamp": "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
 }
 "@
       $json | Set-Content -Path (Join-Path $reportsDir "$TaskId.json")
@@ -1744,7 +1821,7 @@ function Run-ParallelTasksYamlV1 {
       }
       return $false
     }
-    $readyTasks = Scheduler-GetReady
+    $readyTasks = @(Scheduler-GetReady)
     $slotsAvailable = $script:MAX_PARALLEL - $running
     $tasksToStart = @()
     for ($i = 0; $i -lt $readyTasks.Count -and $i -lt $slotsAvailable; $i++) { $tasksToStart += $readyTasks[$i] }
@@ -1781,8 +1858,12 @@ function Run-ParallelTasksYamlV1 {
 
       $createPrArg = if ($script:CREATE_PR) { "true" } else { "false" }
       $draftPrArg = if ($script:PR_DRAFT) { "true" } else { "false" }
+      $psExe = (Get-Process -Id $PID).Path
+      if (-not $psExe) { $psExe = "powershell" }
+      $scriptPath = $PSCommandPath
+      if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Definition }
       $argList = @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath,
         "--internal-run-agent-yaml-v1", $taskId, $agentNum, $outputFile, $statusFile, $logFile, $streamFile,
         $script:PRD_FILE, $script:BASE_BRANCH, $script:AI_ENGINE, $script:OPENCODE_MODEL,
         $createPrArg, $draftPrArg,
@@ -1812,7 +1893,7 @@ function Run-ParallelTasksYamlV1 {
       Start-Sleep -Milliseconds 300
     }
 
-    foreach ($pid in $batchPids) { try { Wait-Process -Id $pid -ErrorAction SilentlyContinue } catch { } }
+    foreach ($procId in $batchPids) { try { Wait-Process -Id $procId -ErrorAction SilentlyContinue } catch { } }
 
     for ($j = 0; $j -lt $batchIds.Count; $j++) {
       $taskId = $batchIds[$j]
@@ -2027,7 +2108,17 @@ if ($args.Count -gt 0 -and $args[0] -eq "--internal-run-agent-yaml-v1") {
   $script:ARTIFACTS_DIR = $Args[15]
   $script:MAX_RETRIES = [int]$Args[16]
   $script:RETRY_DELAY = [int]$Args[17]
-  try { Run-ParallelAgentYamlV1 $taskId $agentNum $outputFile $statusFile $logFile $streamFile | Out-Null } catch { }
+  try { 
+    Run-ParallelAgentYamlV1 $taskId $agentNum $outputFile $statusFile $logFile $streamFile | Out-Null 
+  } catch { 
+    $err = $_
+    if ($logFile -and (Test-Path $logFile)) {
+      Add-Content -Path $logFile -Value "[FATAL] Internal agent crashed: $err"
+      Add-Content -Path $logFile -Value $err.ScriptStackTrace
+    }
+    "failed" | Set-Content -Path $statusFile
+    exit 1
+  }
   exit 0
 }
 
