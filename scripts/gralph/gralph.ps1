@@ -867,6 +867,17 @@ function Is-ValidMutex {
 }
 
 function Validate-TasksYamlV1 {
+  if ((Get-Item $script:PRD_FILE).Length -eq 0) {
+    Log-Error "tasks.yaml validation failed: File is empty"
+    return $false
+  }
+
+  $hasTasks = Normalize-YqScalar (& yq -r 'has("tasks")' $script:PRD_FILE 2>$null)
+  if ($hasTasks -ne "true") {
+     Log-Error "tasks.yaml validation failed: Missing 'tasks' array"
+     return $false
+  }
+
   $errors = @()
   $version = Normalize-YqScalar (& yq -r '.version' $script:PRD_FILE 2>$null)
   if ($version -and $version -ne "1") { $errors += "version must be 1 if specified (got: $version)" }
@@ -899,6 +910,7 @@ function Validate-TasksYamlV1 {
   }
   $cycle = Detect-CyclesYamlV1
   if ($cycle) { $errors += "Cycle detected: $cycle" }
+  
   if ($errors.Count -gt 0) {
     Log-Error "tasks.yaml validation failed:"
     foreach ($err in $errors) { Write-Host "  - $err" }
