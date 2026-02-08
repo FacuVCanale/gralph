@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | ba
 irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
 ```
 
-Restart your terminal after installing. Then `gralph` is available globally.
+The installer clones gralph and installs it as a Python CLI via [pipx](https://pipx.pypa.io/). Restart your terminal after installing.
 
 **Update:**
 
@@ -41,11 +41,10 @@ gralph --update
 
 ## Requirements
 
+- **Python 3.10+**
+- **git**
 - One of: Claude Code CLI, OpenCode CLI, Codex CLI, or Cursor (`agent` in PATH)
-- `yq` (YAML parsing)
-- `jq`
-- `git`
-- Optional: `gh` (PRs), `bc` (cost estimates)
+- Optional: `gh` (for creating PRs)
 
 ## Quick Start
 
@@ -161,6 +160,19 @@ GRALPH uses these skills (installed with `--init`):
 - `parallel-safe-implementation` - Safe parallel coding
 - `merge-integrator` - Merge branches
 - `semantic-reviewer` - Review integrated code
+
+## Development
+
+```bash
+# Install in development mode
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Lint
+ruff check src/
+```
 
 ## Contributing
 

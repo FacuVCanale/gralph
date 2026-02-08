@@ -8,20 +8,62 @@ set -euo pipefail
 
 REPO="https://github.com/frizynn/gralph.git"
 INSTALL_DIR="$HOME/.gralph"
-BIN_DIR="$INSTALL_DIR/scripts/gralph"
+MIN_PYTHON="3.10"
 
 echo ""
 echo "  GRALPH Installer"
 echo "  ================"
 echo ""
 
-# Check git
+# ── Check git ───────────────────────────────────────────────────────
 if ! command -v git &>/dev/null; then
     echo "  [ERROR] git is required. Install it first."
     exit 1
 fi
 
-# Clone or update
+# ── Check Python 3.10+ ─────────────────────────────────────────────
+PYTHON=""
+for candidate in python3 python; do
+    if command -v "$candidate" &>/dev/null; then
+        py_version=$("$candidate" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || true)
+        if [[ -n "$py_version" ]]; then
+            major="${py_version%%.*}"
+            minor="${py_version#*.}"
+            if [[ "$major" -ge 3 && "$minor" -ge 10 ]]; then
+                PYTHON="$candidate"
+                break
+            fi
+        fi
+    fi
+done
+
+if [[ -z "$PYTHON" ]]; then
+    echo "  [ERROR] Python $MIN_PYTHON+ is required."
+    echo "  Install from https://www.python.org/downloads/"
+    exit 1
+fi
+echo "  [OK] Found $PYTHON ($py_version)"
+
+# ── Ensure pipx ────────────────────────────────────────────────────
+if ! command -v pipx &>/dev/null; then
+    echo "  Installing pipx..."
+    "$PYTHON" -m pip install --user pipx 2>/dev/null || {
+        echo "  [ERROR] Could not install pipx. Install manually:"
+        echo "    $PYTHON -m pip install --user pipx"
+        exit 1
+    }
+    "$PYTHON" -m pipx ensurepath 2>/dev/null || true
+    # Try to find pipx after install
+    export PATH="$HOME/.local/bin:$PATH"
+    if ! command -v pipx &>/dev/null; then
+        echo "  [WARN] pipx installed but not in PATH yet."
+        echo "  Restart your terminal and run this installer again."
+        exit 1
+    fi
+fi
+echo "  [OK] Found pipx"
+
+# ── Clone or update repo ──────────────────────────────────────────
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     echo "  Updating existing installation..."
     git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || {
@@ -37,59 +79,17 @@ else
     echo "  [OK] Cloned"
 fi
 
-# Make executable
-chmod +x "$BIN_DIR/gralph.sh"
-
-# Create symlink so `gralph` works (not just `gralph.sh`)
-mkdir -p "$HOME/.local/bin"
-ln -sf "$BIN_DIR/gralph.sh" "$HOME/.local/bin/gralph"
-
-# Detect shell and profile file
-add_to_path() {
-    local target_dir="$HOME/.local/bin"
-    local shell_name profile_file
-
-    shell_name="$(basename "${SHELL:-/bin/bash}")"
-    case "$shell_name" in
-        zsh)  profile_file="$HOME/.zshrc" ;;
-        bash)
-            if [[ -f "$HOME/.bash_profile" ]]; then
-                profile_file="$HOME/.bash_profile"
-            else
-                profile_file="$HOME/.bashrc"
-            fi
-            ;;
-        fish) profile_file="$HOME/.config/fish/config.fish" ;;
-        *)    profile_file="$HOME/.profile" ;;
-    esac
-
-    # Check if already in PATH
-    if echo "$PATH" | tr ':' '\n' | grep -qx "$target_dir"; then
-        echo "  [OK] Already in PATH"
-        return
-    fi
-
-    # Check if profile already has it
-    if [[ -f "$profile_file" ]] && grep -q "$target_dir" "$profile_file" 2>/dev/null; then
-        echo "  [OK] PATH entry already in $profile_file"
-        return
-    fi
-
-    echo "  Adding to PATH in $profile_file ..."
-    if [[ "$shell_name" == "fish" ]]; then
-        echo "fish_add_path $target_dir" >> "$profile_file"
-    else
-        echo "" >> "$profile_file"
-        echo "# gralph" >> "$profile_file"
-        echo "export PATH=\"$target_dir:\$PATH\"" >> "$profile_file"
-    fi
-    echo "  [OK] Added $target_dir to PATH"
+# ── Install Python package via pipx ───────────────────────────────
+echo "  Installing gralph CLI via pipx..."
+pipx install "$INSTALL_DIR" --force 2>/dev/null || {
+    echo "  [ERROR] pipx install failed."
+    echo "  Try manually: pipx install $INSTALL_DIR"
+    exit 1
 }
-
-add_to_path
+echo "  [OK] Installed"
 
 echo ""
-echo "  Done! Restart your terminal (or source your profile), then run:"
+echo "  Done! Restart your terminal, then run:"
 echo ""
 echo "    gralph --help           # show usage"
 echo "    gralph --update         # update gralph"

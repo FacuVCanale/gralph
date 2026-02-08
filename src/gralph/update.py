@@ -9,66 +9,80 @@ from pathlib import Path
 from gralph import log
 
 
+def _find_install_dir() -> Path | None:
+    """Locate the gralph clone directory (``~/.gralph``)."""
+    home_clone = Path.home() / ".gralph"
+    if (home_clone / ".git").is_dir():
+        return home_clone
+
+    # Also check if we're running from a git repo directly
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent.parent  # src/gralph -> src -> repo root
+    if (repo_root / ".git").is_dir():
+        return repo_root
+
+    return None
+
+
 def self_update() -> None:
     """Update gralph to the latest version.
 
-    Detects the installation method and updates accordingly:
-    - pipx: ``pipx upgrade gralph``
-    - git clone: ``git pull``
-    - pip: prints instructions
+    Standard install flow (via ``install.sh`` / ``install.ps1``):
+    1. ``git pull`` in the local clone (``~/.gralph``)
+    2. ``pipx install --force ~/.gralph`` to rebuild the CLI
     """
-    # 1. Try pipx
+    install_dir = _find_install_dir()
+
+    if install_dir is None:
+        log.info("Could not find gralph installation directory. Update manually:")
+        log.console.print("  pipx upgrade gralph")
+        log.console.print("  # or: pip install --upgrade gralph")
+        return
+
+    # 1. Git pull
+    log.info(f"Pulling latest from {install_dir}…")
+    before = subprocess.run(
+        ["git", "-C", str(install_dir), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    r = subprocess.run(
+        ["git", "-C", str(install_dir), "pull", "--ff-only"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        log.warn("Fast-forward failed, resetting to origin/main…")
+        subprocess.run(
+            ["git", "-C", str(install_dir), "fetch", "origin"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(install_dir), "reset", "--hard", "origin/main"],
+            capture_output=True,
+        )
+
+    after = subprocess.run(
+        ["git", "-C", str(install_dir), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    if before == after:
+        log.info(f"Already up to date ({after})")
+    else:
+        log.success(f"Updated {before} → {after}")
+
+    # 2. Reinstall via pipx
     if shutil.which("pipx"):
-        log.info("Detected pipx — running pipx upgrade gralph…")
+        log.info("Reinstalling via pipx…")
         r = subprocess.run(
-            ["pipx", "upgrade", "gralph"],
+            ["pipx", "install", str(install_dir), "--force"],
             capture_output=True, text=True,
         )
         if r.returncode == 0:
-            log.success(f"Updated via pipx: {r.stdout.strip()}")
-            return
-        # pipx might fail if not installed via pipx — fall through
-        log.debug(f"pipx upgrade failed: {r.stderr.strip()}")
-
-    # 2. Try git (legacy install)
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent.parent  # src/gralph -> src -> repo root
-    git_dir = repo_root / ".git"
-
-    if git_dir.is_dir():
-        log.info("Detected git installation — pulling latest…")
-        before = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-
-        r = subprocess.run(
-            ["git", "-C", str(repo_root), "pull", "--ff-only"],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            log.warn("Fast-forward failed, resetting to origin/main…")
-            subprocess.run(
-                ["git", "-C", str(repo_root), "fetch", "origin"],
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(repo_root), "reset", "--hard", "origin/main"],
-                capture_output=True,
-            )
-
-        after = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-
-        if before == after:
-            log.success(f"Already up to date ({after})")
+            log.success("Reinstalled gralph CLI")
         else:
-            log.success(f"Updated {before} → {after}")
-        return
-
-    # 3. Fallback: print instructions
-    log.info("Could not detect installation method. Update manually:")
-    log.console.print("  pipx upgrade gralph")
-    log.console.print("  # or: pip install --upgrade gralph")
+            log.warn(f"pipx install failed: {r.stderr.strip()}")
+            log.console.print(f"  Try manually: pipx install {install_dir} --force")
+    else:
+        log.info("pipx not found — skipping reinstall.")
+        log.console.print(f"  Run manually: pip install {install_dir}")

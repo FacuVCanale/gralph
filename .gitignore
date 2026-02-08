@@ -1,5 +1,17 @@
+# AI tool configs
 .opencode/*
 .codex/
 .claude/
+
+# GRALPH runtime artifacts
 tasks/
 artifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.egg

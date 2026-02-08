@@ -217,9 +217,8 @@ class Runner:
         if prd_src.is_file():
             shutil.copy2(prd_src, wt_dir)
 
-        progress_dir = wt_dir / "scripts" / "gralph"
-        progress_dir.mkdir(parents=True, exist_ok=True)
-        (progress_dir / "progress.txt").touch()
+        # Create progress.txt in worktree root
+        (wt_dir / "progress.txt").touch()
 
         prompt = _build_task_prompt(task_id, title, touches)
         status_file.write_text("running")

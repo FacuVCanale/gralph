@@ -281,7 +281,7 @@ def _run_pipeline(cfg: Config) -> None:
     init_artifacts_dir(cfg)
 
     # ── Create progress.txt if missing ───────────────────────────
-    progress = Path("scripts/gralph/progress.txt")
+    progress = Path(cfg.run_dir or ".") / "progress.txt"
     if not progress.is_file():
         progress.parent.mkdir(parents=True, exist_ok=True)
         progress.touch()

@@ -15,12 +15,12 @@
 - [ ] Add direct task execution CLI:
     - **Single task**:
       ```bash
-      ./gralph.sh "add dark mode"
-      ./gralph.sh "fix the auth bug"
+      gralph "add dark mode"
+      gralph "fix the auth bug"
       ```
     - **Task list**:
       ```bash
-      ./gralph.sh              # defaults to PRD.md
-      ./gralph.sh --prd tasks.md
+      gralph              # defaults to PRD.md
+      gralph --prd tasks.md
       ```
 - [ ] Implement forceful init

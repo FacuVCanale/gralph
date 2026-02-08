@@ -1,28 +1,75 @@
 #!/usr/bin/env pwsh
 # ============================================
-# GRALPH Installer
+# GRALPH Installer (Windows)
 # Usage: irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
 # ============================================
 
-# Use Continue so git stderr doesn't terminate (PS 5.x treats it as error)
 $ErrorActionPreference = "Continue"
 
 $REPO = "https://github.com/frizynn/gralph.git"
 $INSTALL_DIR = Join-Path $HOME ".gralph"
-$BIN_DIR = Join-Path $INSTALL_DIR "scripts\gralph"
+$MIN_PYTHON = "3.10"
 
 Write-Host ""
 Write-Host "  GRALPH Installer" -ForegroundColor Cyan
 Write-Host "  ================" -ForegroundColor Cyan
 Write-Host ""
 
-# Check git
+# ── Check git ───────────────────────────────────────────────────────
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "  [ERROR] git is required. Install from https://git-scm.com" -ForegroundColor Red
     exit 1
 }
 
-# Clone or update
+# ── Check Python 3.10+ ─────────────────────────────────────────────
+$Python = $null
+foreach ($candidate in @("python3", "python", "py")) {
+    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+    if ($cmd) {
+        try {
+            $pyVersion = & $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+            if ($pyVersion) {
+                $parts = $pyVersion.Split(".")
+                $major = [int]$parts[0]
+                $minor = [int]$parts[1]
+                if ($major -ge 3 -and $minor -ge 10) {
+                    $Python = $candidate
+                    break
+                }
+            }
+        } catch {}
+    }
+}
+
+if (-not $Python) {
+    Write-Host "  [ERROR] Python $MIN_PYTHON+ is required." -ForegroundColor Red
+    Write-Host "  Install from https://www.python.org/downloads/" -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "  [OK] Found $Python ($pyVersion)" -ForegroundColor Green
+
+# ── Ensure pipx ────────────────────────────────────────────────────
+$hasPipx = Get-Command pipx -ErrorAction SilentlyContinue
+if (-not $hasPipx) {
+    Write-Host "  Installing pipx..." -ForegroundColor Yellow
+    & $Python -m pip install --user pipx 2>$null | Out-Null
+    & $Python -m pipx ensurepath 2>$null | Out-Null
+
+    # Refresh PATH for this session
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $env:Path = "$userPath;$machinePath"
+
+    $hasPipx = Get-Command pipx -ErrorAction SilentlyContinue
+    if (-not $hasPipx) {
+        Write-Host "  [WARN] pipx installed but not in PATH yet." -ForegroundColor Yellow
+        Write-Host "  Restart your terminal and run this installer again." -ForegroundColor Yellow
+        exit 1
+    }
+}
+Write-Host "  [OK] Found pipx" -ForegroundColor Green
+
+# ── Clone or update repo ──────────────────────────────────────────
 if (Test-Path (Join-Path $INSTALL_DIR ".git")) {
     Write-Host "  Updating existing installation..." -ForegroundColor Yellow
     & git -C $INSTALL_DIR pull --ff-only 2>$null | Out-Null
@@ -43,16 +90,15 @@ if (Test-Path (Join-Path $INSTALL_DIR ".git")) {
     Write-Host "  [OK] Cloned" -ForegroundColor Green
 }
 
-# Add to user PATH if not already there
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($userPath -notlike "*$BIN_DIR*") {
-    Write-Host "  Adding to PATH..." -ForegroundColor Yellow
-    [Environment]::SetEnvironmentVariable("Path", "$userPath;$BIN_DIR", "User")
-    $env:Path = "$env:Path;$BIN_DIR"
-    Write-Host "  [OK] Added $BIN_DIR to user PATH" -ForegroundColor Green
-} else {
-    Write-Host "  [OK] Already in PATH" -ForegroundColor Green
+# ── Install Python package via pipx ───────────────────────────────
+Write-Host "  Installing gralph CLI via pipx..." -ForegroundColor Yellow
+& pipx install $INSTALL_DIR --force 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  [ERROR] pipx install failed." -ForegroundColor Red
+    Write-Host "  Try manually: pipx install $INSTALL_DIR" -ForegroundColor Yellow
+    exit 1
 }
+Write-Host "  [OK] Installed" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "  Done! Restart your terminal, then run:" -ForegroundColor Green
