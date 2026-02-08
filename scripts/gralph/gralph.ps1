@@ -24,6 +24,7 @@ $script:MAX_RETRIES = 3
 $script:RETRY_DELAY = 5
 $script:VERBOSE = $true
 $script:EXTERNAL_FAIL_TIMEOUT = 300
+$script:STALLED_TIMEOUT = 600
 
 # Git branch options
 $script:BRANCH_PER_TASK = $false
@@ -511,6 +512,7 @@ function Parse-Args {
       "--max-retries" { $script:MAX_RETRIES = [int]$Arguments[$i + 1]; $i++ }
       "--retry-delay" { $script:RETRY_DELAY = [int]$Arguments[$i + 1]; $i++ }
       "--external-fail-timeout" { $script:EXTERNAL_FAIL_TIMEOUT = [int]$Arguments[$i + 1]; $i++ }
+      "--stalled-timeout" { $script:STALLED_TIMEOUT = [int]$Arguments[$i + 1]; $i++ }
       "--parallel" { $script:PARALLEL = $true; $script:SEQUENTIAL = $false }
       "--sequential" { $script:SEQUENTIAL = $true; $script:PARALLEL = $false }
       "--max-parallel" { $script:MAX_PARALLEL = [int]$Arguments[$i + 1]; $i++ }
@@ -1921,6 +1923,17 @@ function Run-ParallelTasksYamlV1 {
   $script:EXTERNAL_FAIL_DETECTED = $false
   $script:EXTERNAL_FAIL_REASON = ""
   $script:EXTERNAL_FAIL_TASK_ID = ""
+  
+  # Active Agent State (ArrayLists for dynamic management)
+  $script:ACTIVE_PIDS = New-Object System.Collections.ArrayList
+  $script:ACTIVE_TASK_IDS = New-Object System.Collections.ArrayList
+  $script:ACTIVE_STATUS_FILES = New-Object System.Collections.ArrayList
+  $script:ACTIVE_LOG_FILES = New-Object System.Collections.ArrayList
+  $script:ACTIVE_OUTPUT_FILES = New-Object System.Collections.ArrayList
+  $script:ACTIVE_STREAM_FILES = New-Object System.Collections.ArrayList
+  $script:ACTIVE_AGENT_NUMS = New-Object System.Collections.ArrayList
+  $script:ACTIVE_LAST_ACTIVITY = New-Object System.Collections.ArrayList
+
   $pending = Scheduler-CountPending
   Log-Info "Tasks: $pending pending"
   $completedBranches = @()
@@ -1928,9 +1941,158 @@ function Run-ParallelTasksYamlV1 {
   $agentNum = 0
 
   while ($true) {
+    # ---------------------------------------------------------
+    # 1. CHECK & PROCESS FINISHED AGENTS
+    # ---------------------------------------------------------
+    $finishedIndices = @()
+    
+    for ($i = 0; $i -lt $script:ACTIVE_PIDS.Count; $i++) {
+        $procId = $script:ACTIVE_PIDS[$i]
+        $taskId = $script:ACTIVE_TASK_IDS[$i]
+        $statusFile = $script:ACTIVE_STATUS_FILES[$i]
+        $logFile = $script:ACTIVE_LOG_FILES[$i]
+        
+        # Check for activity (log file updates)
+        if (Test-Path $logFile) {
+            $lastWrite = (Get-Item $logFile).LastWriteTime
+            if ($lastWrite -gt $script:ACTIVE_LAST_ACTIVITY[$i]) { 
+                $script:ACTIVE_LAST_ACTIVITY[$i] = $lastWrite 
+            }
+        }
+
+        # Check for stall
+        $idleSeconds = ((Get-Date) - $script:ACTIVE_LAST_ACTIVITY[$i]).TotalSeconds
+        if ($idleSeconds -gt $script:STALLED_TIMEOUT) {
+            $pidAlive = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if ($pidAlive) {
+                Log-Warn "Agent $($script:ACTIVE_AGENT_NUMS[$i]) stalled for $([int]$idleSeconds)s (no log output). Killing..."
+                try { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue } catch { }
+                "failed" | Set-Content -Path $statusFile -Force
+            }
+        }
+
+        $pidAlive = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        
+        $statusContent = ""
+        if (Test-Path $statusFile) { 
+            # Use retry logic for reading status file as it might be locked
+            $retryRead = 0
+            while ($retryRead -lt 3) {
+                try {
+                    $statusContent = Get-Content $statusFile -Raw -ErrorAction Stop
+                    break
+                } catch {
+                    Start-Sleep -Milliseconds 100
+                    $retryRead++
+                }
+            }
+        }
+        
+        $isFinished = $false
+        if ($statusContent -match "done" -or $statusContent -match "failed") {
+            # Process marked as done/failed
+            # Wait for PID to exit to ensure cleanup is done
+            if (-not $pidAlive) { $isFinished = $true }
+        } elseif (-not $pidAlive) {
+             # PID dead but status not updated -> crash
+             "failed" | Set-Content -Path $statusFile -Force
+             $isFinished = $true
+        }
+
+        if ($isFinished) {
+            $finishedIndices += $i
+        }
+    }
+
+    # Process finished agents (reverse order to maintain indices)
+    if ($finishedIndices.Count -gt 0) {
+        $finishedIndices = $finishedIndices | Sort-Object -Descending
+        foreach ($idx in $finishedIndices) {
+            $taskId = $script:ACTIVE_TASK_IDS[$idx]
+            $logFile = $script:ACTIVE_LOG_FILES[$idx]
+            $statusFile = $script:ACTIVE_STATUS_FILES[$idx]
+            $outputFile = $script:ACTIVE_OUTPUT_FILES[$idx]
+            $streamFile = $script:ACTIVE_STREAM_FILES[$idx]
+            
+            $status = if (Test-Path $statusFile) { Get-Content $statusFile -Raw } else { "unknown" }
+            $title = Get-TaskTitleByIdYamlV1 $taskId
+            Persist-TaskLog $taskId $logFile
+            
+            if ($status -match "done") {
+                $branch = ""
+                if (Test-Path $outputFile) { $branch = ((Get-Content $outputFile -Raw) -split '\s+')[2] }
+                
+                $mergeSuccess = $true
+                if (-not $script:CREATE_PR -and $branch) {
+                    Log-Info "Merging $branch into $($script:BASE_BRANCH)..."
+                    cmd /c "git checkout $script:BASE_BRANCH >nul 2>&1"
+                    if (Merge-BranchWithFallback $branch $taskId) {
+                        cmd /c "git branch -d $branch >nul 2>&1"
+                        $completedBranches += $branch
+                    } else {
+                        $mergeSuccess = $false
+                        Log-Error "Merge failed for $branch. Task will remain pending."
+                    }
+                }
+
+                if ($mergeSuccess) {
+                    Scheduler-CompleteTask $taskId
+                    $completedTaskIds += $taskId
+                    Write-Host "  ${script:GREEN}*${script:RESET} $($title.Substring(0, [Math]::Min(45, $title.Length))) ($taskId)"
+                } else {
+                    Scheduler-FailTask $taskId
+                    Write-Host "  ${script:RED}*${script:RESET} $($title.Substring(0, [Math]::Min(45, $title.Length))) ($taskId) [Merge Failed]"
+                }
+            } else {
+                Scheduler-FailTask $taskId
+                Write-Host "  ${script:RED}*${script:RESET} $($title.Substring(0, [Math]::Min(45, $title.Length))) ($taskId)"
+                $errMsg = Extract-ErrorFromLog $logFile
+                if ($errMsg) { Write-Host "${script:DIM}    Error: $errMsg${script:RESET}" }
+                $failureType = "unknown"
+                if ($errMsg) {
+                  if (Is-ExternalFailureError $errMsg) { $failureType = "external" } else { $failureType = "internal" }
+                }
+                Write-FailedTaskReport $taskId $title $errMsg $failureType ""
+                if ($failureType -eq "external" -and -not $script:EXTERNAL_FAIL_DETECTED) {
+                  $script:EXTERNAL_FAIL_DETECTED = $true
+                  $script:EXTERNAL_FAIL_TASK_ID = $taskId
+                  $script:EXTERNAL_FAIL_REASON = $errMsg
+                }
+            }
+
+            # Cleanup files
+            foreach ($f in @($statusFile, $outputFile, $logFile, $streamFile)) {
+                if ($f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+            }
+
+            # Remove from active lists
+            $script:ACTIVE_PIDS.RemoveAt($idx)
+            $script:ACTIVE_TASK_IDS.RemoveAt($idx)
+            $script:ACTIVE_STATUS_FILES.RemoveAt($idx)
+            $script:ACTIVE_LOG_FILES.RemoveAt($idx)
+            $script:ACTIVE_OUTPUT_FILES.RemoveAt($idx)
+            $script:ACTIVE_STREAM_FILES.RemoveAt($idx)
+            $script:ACTIVE_AGENT_NUMS.RemoveAt($idx)
+            $script:ACTIVE_LAST_ACTIVITY.RemoveAt($idx)
+        }
+    }
+
+    # ---------------------------------------------------------
+    # 2. CHECK FOR COMPLETION / DEADLOCK
+    # ---------------------------------------------------------
+    
+    if ($script:EXTERNAL_FAIL_DETECTED) {
+      Log-Error "External failure detected: $($script:EXTERNAL_FAIL_TASK_ID) - $($script:EXTERNAL_FAIL_REASON)"
+      Print-BlockedTasks
+      External-FailGracefulStop $script:EXTERNAL_FAIL_TIMEOUT
+      return $false
+    }
+
     $pending = Scheduler-CountPending
     $running = Scheduler-CountRunning
+    
     if ($pending -eq 0 -and $running -eq 0) { break }
+    
     if (Scheduler-CheckDeadlock) {
       $hasFailedDeps = $false
       foreach ($id in $script:SCHED_STATE.Keys) {
@@ -1958,179 +2120,64 @@ function Run-ParallelTasksYamlV1 {
       }
       return $false
     }
-    $readyTasks = @(Scheduler-GetReady)
+
+    # ---------------------------------------------------------
+    # 3. LAUNCH NEW TASKS
+    # ---------------------------------------------------------
+    
     $slotsAvailable = $script:MAX_PARALLEL - $running
-    $tasksToStart = @()
-    for ($i = 0; $i -lt $readyTasks.Count -and $i -lt $slotsAvailable; $i++) { $tasksToStart += $readyTasks[$i] }
-    if ($tasksToStart.Count -eq 0) { Start-Sleep -Milliseconds 500; continue }
-
-    Write-Host ""
-    Write-Host "${script:BOLD}Starting $($tasksToStart.Count) agent(s)${script:RESET}"
-    $batchPids = @()
-    $batchIds = @()
-    $batchTitles = @()
-    $batchAgentNums = @()
-    $statusFiles = @()
-    $outputFiles = @()
-    $logFiles = @()
-    $streamFiles = @()
-
-    foreach ($taskId in $tasksToStart) {
-      $agentNum++
-      $script:iteration++
-      Scheduler-StartTask $taskId
-      $statusFile = [IO.Path]::GetTempFileName()
-      $outputFile = [IO.Path]::GetTempFileName()
-      $logFile = [IO.Path]::GetTempFileName()
-      $streamFile = [IO.Path]::GetTempFileName()
-      $statusFiles += $statusFile
-      $outputFiles += $outputFile
-      $logFiles += $logFile
-      $streamFiles += $streamFile
-      $batchIds += $taskId
-      $batchAgentNums += $agentNum
-      $title = Get-TaskTitleByIdYamlV1 $taskId
-      $batchTitles += $title
-      Write-Host ("  ${script:CYAN}*${script:RESET} Agent {0}: {1} ({2})" -f $agentNum, $title.Substring(0, [Math]::Min(40, $title.Length)), $taskId)
-
-      $createPrArg = if ($script:CREATE_PR) { "true" } else { "false" }
-      $draftPrArg = if ($script:PR_DRAFT) { "true" } else { "false" }
-      $psExe = (Get-Process -Id $PID).Path
-      if (-not $psExe) { $psExe = "powershell" }
-      $scriptPath = $PSCommandPath
-      if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Definition }
-      $argList = @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath,
-        "--internal-run-agent-yaml-v1", $taskId, $agentNum, $outputFile, $statusFile, $logFile, $streamFile,
-        $script:PRD_FILE, $script:BASE_BRANCH, $script:AI_ENGINE, $script:OPENCODE_MODEL,
-        $createPrArg, $draftPrArg,
-        $script:ORIGINAL_DIR, $script:WORKTREE_BASE, $script:ARTIFACTS_DIR,
-        $script:MAX_RETRIES, $script:RETRY_DELAY
-      )
-      $psExe = (Get-Process -Id $PID).Path
-      $proc = Start-Process -FilePath $psExe -ArgumentList $argList -PassThru -NoNewWindow
-      $batchPids += $proc.Id
-    }
-
-    $script:ACTIVE_PIDS = $batchPids
-    $script:ACTIVE_TASK_IDS = $batchIds
-    $script:ACTIVE_STATUS_FILES = $statusFiles
-    $script:ACTIVE_LOG_FILES = $logFiles
-
-    $startTime = Get-Date
-    $allDone = $false
-    while (-not $allDone) {
-      $allDone = $true
-      for ($j = 0; $j -lt $batchPids.Count; $j++) {
-        $statusFile = $statusFiles[$j]
-        $pidAlive = Get-Process -Id $batchPids[$j] -ErrorAction SilentlyContinue
+    if ($slotsAvailable -gt 0) {
+        $readyTasks = @(Scheduler-GetReady)
+        $tasksToStart = @()
+        for ($i = 0; $i -lt $readyTasks.Count -and $i -lt $slotsAvailable; $i++) { $tasksToStart += $readyTasks[$i] }
         
-        $statusContent = ""
-        if (Test-Path $statusFile) { 
-            # Use retry logic for reading status file as it might be locked
-            $retryRead = 0
-            while ($retryRead -lt 3) {
-                try {
-                    $statusContent = Get-Content $statusFile -Raw -ErrorAction Stop
-                    break
-                } catch {
-                    Start-Sleep -Milliseconds 100
-                    $retryRead++
-                }
-            }
-        }
-        
-        if ($statusContent -match "done" -or $statusContent -match "failed") {
-            # Process marked as done/failed, we can consider it finished even if PID is still there (cleanup might be happening)
-            # But we should wait for PID to exit to ensure cleanup is done
-            if ($pidAlive) { $allDone = $false }
-        } else {
-             # Not done/failed yet
-             if ($pidAlive) { $allDone = $false }
-             # If PID is dead but status is not done/failed, it crashed silently
-             if (-not $pidAlive -and $statusContent -ne "done" -and $statusContent -ne "failed") {
-                 "failed" | Set-Content -Path $statusFile -Force
-             }
-        }
-      }
-      Start-Sleep -Milliseconds 500
-    }
-
-    foreach ($procId in $batchPids) { try { Wait-Process -Id $procId -ErrorAction SilentlyContinue } catch { } }
-
-    for ($j = 0; $j -lt $batchIds.Count; $j++) {
-      $taskId = $batchIds[$j]
-      $logFile = $logFiles[$j]
-      $status = if (Test-Path $statusFiles[$j]) { Get-Content $statusFiles[$j] -Raw } else { "unknown" }
-      $title = Get-TaskTitleByIdYamlV1 $taskId
-      Persist-TaskLog $taskId $logFile
-      if ($status -match "done") {
-        $branch = ""
-        if (Test-Path $outputFiles[$j]) { $branch = ((Get-Content $outputFiles[$j] -Raw) -split '\s+')[2] }
-        
-        $mergeSuccess = $true
-        if (-not $script:CREATE_PR -and $branch) {
-            # ROBUSTNESS FIX: Merge immediately before marking task as complete
-            # This ensures tasks.yaml "completed: true" always means "code is merged"
-            Log-Info "Merging $branch into $($script:BASE_BRANCH)..."
+        foreach ($taskId in $tasksToStart) {
+            $agentNum++
+            $script:iteration++
+            Scheduler-StartTask $taskId
             
-            # Ensure we are on the base branch
-            cmd /c "git checkout $script:BASE_BRANCH >nul 2>&1"
+            $statusFile = [IO.Path]::GetTempFileName()
+            $outputFile = [IO.Path]::GetTempFileName()
+            $logFile = [IO.Path]::GetTempFileName()
+            $streamFile = [IO.Path]::GetTempFileName()
             
-            if (Merge-BranchWithFallback $branch $taskId) {
-                cmd /c "git branch -d $branch >nul 2>&1"
-                $completedBranches += $branch
-            } else {
-                $mergeSuccess = $false
-                Log-Error "Merge failed for $branch. Task will remain pending."
-            }
-        }
+            $title = Get-TaskTitleByIdYamlV1 $taskId
+            Write-Host ("  ${script:CYAN}*${script:RESET} Agent {0}: {1} ({2})" -f $agentNum, $title.Substring(0, [Math]::Min(40, $title.Length)), $taskId)
 
-        if ($mergeSuccess) {
-            Scheduler-CompleteTask $taskId
-            $completedTaskIds += $taskId
-            Write-Host "  ${script:GREEN}*${script:RESET} $($title.Substring(0, [Math]::Min(45, $title.Length))) ($taskId)"
-        } else {
-            Scheduler-FailTask $taskId
-            Write-Host "  ${script:RED}*${script:RESET} $($title.Substring(0, [Math]::Min(45, $title.Length))) ($taskId) [Merge Failed]"
+            $createPrArg = if ($script:CREATE_PR) { "true" } else { "false" }
+            $draftPrArg = if ($script:PR_DRAFT) { "true" } else { "false" }
+            $psExe = (Get-Process -Id $PID).Path
+            if (-not $psExe) { $psExe = "powershell" }
+            $scriptPath = $PSCommandPath
+            if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Definition }
+            $argList = @(
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath,
+                "--internal-run-agent-yaml-v1", $taskId, $agentNum, $outputFile, $statusFile, $logFile, $streamFile,
+                $script:PRD_FILE, $script:BASE_BRANCH, $script:AI_ENGINE, $script:OPENCODE_MODEL,
+                $createPrArg, $draftPrArg,
+                $script:ORIGINAL_DIR, $script:WORKTREE_BASE, $script:ARTIFACTS_DIR,
+                $script:MAX_RETRIES, $script:RETRY_DELAY
+            )
+            
+            $proc = Start-Process -FilePath $psExe -ArgumentList $argList -PassThru -NoNewWindow
+            
+            $script:ACTIVE_PIDS.Add($proc.Id) | Out-Null
+            $script:ACTIVE_TASK_IDS.Add($taskId) | Out-Null
+            $script:ACTIVE_STATUS_FILES.Add($statusFile) | Out-Null
+            $script:ACTIVE_LOG_FILES.Add($logFile) | Out-Null
+            $script:ACTIVE_OUTPUT_FILES.Add($outputFile) | Out-Null
+            $script:ACTIVE_STREAM_FILES.Add($streamFile) | Out-Null
+            $script:ACTIVE_AGENT_NUMS.Add($agentNum) | Out-Null
+            $script:ACTIVE_LAST_ACTIVITY.Add((Get-Date)) | Out-Null
         }
-      } else {
-        Scheduler-FailTask $taskId
-        Write-Host "  ${script:RED}*${script:RESET} $($title.Substring(0, [Math]::Min(45, $title.Length))) ($taskId)"
-        $errMsg = Extract-ErrorFromLog $logFile
-        if ($errMsg) { Write-Host "${script:DIM}    Error: $errMsg${script:RESET}" }
-        $failureType = "unknown"
-        if ($errMsg) {
-          if (Is-ExternalFailureError $errMsg) { $failureType = "external" } else { $failureType = "internal" }
-        }
-        Write-FailedTaskReport $taskId $title $errMsg $failureType ""
-        if ($failureType -eq "external" -and -not $script:EXTERNAL_FAIL_DETECTED) {
-          $script:EXTERNAL_FAIL_DETECTED = $true
-          $script:EXTERNAL_FAIL_TASK_ID = $taskId
-          $script:EXTERNAL_FAIL_REASON = $errMsg
-        }
-      }
-      foreach ($f in @($statusFiles[$j], $outputFiles[$j], $logFiles[$j], $streamFiles[$j])) {
-        if ($f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
-      }
     }
-
-    if ($script:EXTERNAL_FAIL_DETECTED) {
-      Log-Error "External failure detected: $($script:EXTERNAL_FAIL_TASK_ID) - $($script:EXTERNAL_FAIL_REASON)"
-      Print-BlockedTasks
-      External-FailGracefulStop $script:EXTERNAL_FAIL_TIMEOUT
-      return $false
-    }
-
-    $script:ACTIVE_PIDS = @()
-    $script:ACTIVE_TASK_IDS = @()
-    $script:ACTIVE_STATUS_FILES = @()
-    $script:ACTIVE_LOG_FILES = @()
 
     if ($script:MAX_ITERATIONS -gt 0 -and $script:iteration -ge $script:MAX_ITERATIONS) {
       Log-Warn "Reached max iterations ($($script:MAX_ITERATIONS))"
       break
     }
+    
+    Start-Sleep -Milliseconds 500
   }
 
   if ($script:WORKTREE_BASE -and (Test-Path $script:WORKTREE_BASE)) {
@@ -2140,9 +2187,6 @@ function Run-ParallelTasksYamlV1 {
   if ($completedBranches.Count -gt 0 -and -not $script:CREATE_PR) {
     Write-Host ""
     Write-Host "${script:BOLD}Review Phase${script:RESET}"
-    # Reviewer now runs on the already-merged state in BASE_BRANCH
-    # We compare against origin/main or just run a general check
-    # For now, we skip the diff-based check since we merged incrementally
     Log-Info "All tasks merged successfully to $($script:BASE_BRANCH)"
   }
 
