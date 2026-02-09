@@ -19,6 +19,8 @@ Create detailed Product Requirements Documents that are clear, actionable, and s
 
 **Important:** Do NOT start implementing. Just create the PRD.
 
+**CRITICAL — prd-id is MANDATORY:** Every PRD MUST include a `prd-id: <feature-name-kebab-case>` line immediately after the `# PRD: ...` title. Without this line gralph cannot process the PRD. Derive the id from the feature name in kebab-case (e.g. `task-priority-system`, `user-auth-flow`).
+
 ---
 
 ## Step 0: Repository Context (As Needed)
@@ -71,7 +73,15 @@ This lets users respond with "1A, 2C, 3B" for quick iteration.
 
 ## Step 2: PRD Structure
 
-Generate the PRD with these sections:
+Generate the PRD with these sections. The **first two lines** of the PRD must always be:
+
+```markdown
+# PRD: <Feature Name>
+
+prd-id: <feature-name-kebab-case>
+```
+
+Then continue with:
 
 ### 1. Introduction/Overview
 Brief description of the feature and the problem it solves.
@@ -168,7 +178,7 @@ The PRD reader may be a junior developer or AI agent. Therefore:
 - **Format:** Markdown (`.md`)
 - **Location:** `tasks/`
 - **Filename:** `prd-[feature-name].md` (kebab-case)
-- **Include:** Always add a line `prd-id: <feature-name-kebab-case>` at the top of the PRD (after the # title)
+- **MANDATORY — prd-id:** The line `prd-id: <feature-name-kebab-case>` MUST appear immediately after the `# PRD: ...` title. gralph will reject PRDs without it.
 
 ---
 
@@ -275,6 +285,7 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 
 Before saving the PRD:
 
+- [ ] `prd-id: <kebab-case>` line present immediately after the title
 - [ ] Asked clarifying questions with lettered options
 - [ ] Incorporated user's answers
 - [ ] User stories are small and specific

@@ -109,15 +109,17 @@ def main(
 
     \b
     EXAMPLES:
-      gralph --opencode              # Run with OpenCode (parallel)
-      gralph --opencode --sequential # Run sequentially
-      gralph --resume my-feature     # Resume previous run
-      gralph --init --claude         # Install skills for Claude
+      gralph --opencode                          # Run with OpenCode (parallel)
+      gralph --opencode --sequential             # Run sequentially
+      gralph --resume my-feature                 # Resume previous run
+      gralph --init --claude                     # Install skills for Claude
+      gralph prd "Add user auth with OAuth"      # Generate a PRD
+      gralph --codex prd "Implement dark mode"   # Generate PRD with Codex
 
     \b
     WORKFLOW:
-      1. Create PRD.md with prd-id line
-      2. Run: gralph --opencode
+      1. Generate PRD:  gralph prd "your feature description"
+      2. Run:           gralph --opencode
       3. GRALPH creates artifacts/prd/<prd-id>/ with tasks.yaml
       4. Tasks run in parallel using DAG scheduler
       5. Resume anytime with --resume <prd-id>
@@ -166,8 +168,165 @@ def main(
         ensure_skills(cfg, mode="install")
         ctx.exit(0)
 
+    # ── If a subcommand (e.g. prd) was invoked, skip the pipeline ─
+    if ctx.invoked_subcommand is not None:
+        return
+
     # ── Main pipeline ────────────────────────────────────────────
     _run_pipeline(cfg)
+
+
+# ── Subcommand: prd ──────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("description")
+@click.option("--output", "-o", default="", help="Output file path (default: tasks/prd-<slug>.md)")
+@click.pass_context
+def prd(ctx: click.Context, description: str, output: str) -> None:
+    """Generate a PRD from a feature description.
+
+    \b
+    EXAMPLES:
+      gralph prd "Add user authentication with OAuth"
+      gralph --codex prd "Implement dark mode toggle"
+      gralph --claude prd -o PRD.md "Refactor payment flow"
+    """
+    from gralph import log as glog
+
+    # Inherit engine from parent context
+    parent_params = ctx.parent.params if ctx.parent else {}
+    engine_name = parent_params.get("engine") or "claude"
+    verbose = parent_params.get("verbose", False)
+    skills_url = parent_params.get("skills_url", "")
+
+    glog.set_verbose(verbose)
+
+    cfg = Config(
+        ai_engine=engine_name,
+        verbose=verbose,
+        skills_base_url=skills_url,
+    )
+
+    _run_prd_generation(cfg, description, output)
+
+
+def _run_prd_generation(cfg: Config, description: str, output_path: str) -> None:
+    """Run an AI engine to generate a PRD from a feature description."""
+    from gralph import log as glog
+    from gralph.engines.registry import get_engine
+    from gralph.prd import extract_prd_id, slugify
+
+    engine = get_engine(cfg.ai_engine)
+    err = engine.check_available()
+    if err:
+        glog.error(err)
+        sys.exit(1)
+
+    # Load PRD skill content
+    skill_path = _find_prd_skill(cfg.ai_engine)
+    if skill_path:
+        skill_content = skill_path.read_text(encoding="utf-8")
+        skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
+    else:
+        glog.warn("PRD skill not found; using built-in prompt. Run 'gralph --init' to install skills.")
+        skill_instruction = ""
+
+    # Determine output file
+    slug = slugify(description)
+    if not output_path:
+        tasks_dir = Path("tasks")
+        tasks_dir.mkdir(exist_ok=True)
+        output_path = str(tasks_dir / f"prd-{slug}.md")
+
+    prompt = f"""{skill_instruction}
+
+Feature request from the user:
+{description}
+
+IMPORTANT RULES:
+1. The PRD MUST start with `# PRD: <Title>` followed by `prd-id: {slug}` on the next non-blank line.
+2. Do NOT ask clarifying questions interactively — infer reasonable defaults and note assumptions in the Open Questions section.
+3. Save the PRD to: {output_path}
+4. Do NOT implement anything — only create the PRD file."""
+
+    glog.info(f"Generating PRD with {cfg.ai_engine}…")
+    glog.info(f"Output: {output_path}")
+
+    result = engine.run_sync(prompt)
+
+    out = Path(output_path)
+    if out.is_file():
+        # Verify prd-id is present
+        prd_id = extract_prd_id(out)
+        if prd_id:
+            glog.success(f"PRD created: {output_path} (prd-id: {prd_id})")
+        else:
+            glog.warn(f"PRD created at {output_path} but missing prd-id. Adding it…")
+            _inject_prd_id(out, slug)
+            glog.success(f"PRD fixed: {output_path} (prd-id: {slug})")
+    else:
+        glog.error(f"Engine failed to create {output_path}")
+        if result.error:
+            glog.error(f"Error: {result.error}")
+        sys.exit(1)
+
+
+def _find_prd_skill(engine_name: str) -> Path | None:
+    """Locate the PRD skill file for the given engine."""
+    from gralph.config import resolve_repo_root
+
+    repo = resolve_repo_root()
+    home = Path.home()
+
+    candidates: list[Path] = []
+    match engine_name:
+        case "claude":
+            candidates = [
+                repo / ".claude/skills/prd/SKILL.md",
+                home / ".claude/skills/prd/SKILL.md",
+            ]
+        case "codex":
+            candidates = [
+                repo / ".codex/skills/prd/SKILL.md",
+                home / ".codex/skills/prd/SKILL.md",
+            ]
+        case "opencode":
+            candidates = [
+                repo / ".opencode/skill/prd/SKILL.md",
+                home / ".config/opencode/skill/prd/SKILL.md",
+            ]
+        case "cursor":
+            candidates = [
+                repo / ".cursor/rules/prd.mdc",
+                repo / ".cursor/commands/prd.md",
+            ]
+
+    # Also check the bundled skills dir
+    candidates.append(repo / "skills/prd/SKILL.md")
+
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _inject_prd_id(prd_file: Path, slug: str) -> None:
+    """Insert a prd-id line after the title if missing."""
+    content = prd_file.read_text(encoding="utf-8")
+    lines = content.splitlines(keepends=True)
+
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            # Insert prd-id after the title line
+            prd_id_line = f"\nprd-id: {slug}\n"
+            lines.insert(i + 1, prd_id_line)
+            break
+    else:
+        # No title found — prepend
+        lines.insert(0, f"prd-id: {slug}\n\n")
+
+    prd_file.write_text("".join(lines), encoding="utf-8")
 
 
 def _run_pipeline(cfg: Config) -> None:
