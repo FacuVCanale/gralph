@@ -14,6 +14,8 @@ GRALPH reads a PRD, generates tasks with dependencies, and runs multiple agents 
 - Parallel execution by default (isolated git worktrees)
 - Per-PRD run directories with all artifacts
 - Automatic resume on re-run
+- Stalled agent detection and automatic cleanup
+- External failure detection (network, permissions, rate limits)
 - Support for Claude Code, OpenCode, Codex, and Cursor
 - Cross-platform: macOS, Linux, and Windows
 
@@ -53,8 +55,10 @@ gralph --update
 cd my-project
 gralph --init
 
-# 2. Create a PRD with prd-id (use /prd skill or write one manually)
-# PRD.md must include: prd-id: my-feature
+# 2. Generate a PRD from a feature description
+gralph prd "Add user authentication with OAuth"
+
+# Or create PRD.md manually (must include: prd-id: my-feature)
 
 # 3. Run gralph (parallel by default)
 gralph
@@ -74,6 +78,10 @@ gralph --opencode
 gralph --cursor
 gralph --codex
 
+# Generate a PRD
+gralph prd "Add dark mode toggle"
+gralph --codex prd -o PRD.md "Refactor payment flow"
+
 # Run sequentially
 gralph --sequential
 
@@ -86,14 +94,22 @@ gralph --dry-run
 # Resume a previous run
 gralph --resume my-feature
 
+# Use a specific PRD file
+gralph --prd features/auth.md
+
 # Skip tests and linting
 gralph --fast
 
 # Create PRs per task instead of auto-merge
 gralph --create-pr --draft-pr
+
+# Tune timeouts
+gralph --stalled-timeout 900 --external-fail-timeout 600
 ```
 
 ## Configuration
+
+### Engine
 
 | Flag | Description |
 |------|-------------|
@@ -101,19 +117,71 @@ gralph --create-pr --draft-pr
 | `--opencode` | Use OpenCode |
 | `--cursor` | Use Cursor agent |
 | `--codex` | Use Codex CLI |
+| `--opencode-model MODEL` | Override OpenCode model (default: `opencode/minimax-m2.1-free`) |
+
+### Execution
+
+| Flag | Description |
+|------|-------------|
 | `--sequential` | Run tasks one at a time (default: parallel) |
 | `--max-parallel N` | Max concurrent agents (default: 3) |
-| `--resume PRD-ID` | Resume a previous run |
-| `--create-pr` | Create PRs instead of auto-merge |
-| `--draft-pr` | Create PRs as drafts |
+| `--max-iterations N` | Stop after N iterations, 0 = unlimited (default: 0) |
+| `--max-retries N` | Max retries per task (default: 3) |
+| `--retry-delay N` | Seconds between retries (default: 5) |
+| `--external-fail-timeout N` | Timeout in seconds for running tasks on external failure (default: 300) |
+| `--stalled-timeout N` | Seconds of inactivity before killing a stalled agent (default: 600) |
+| `--dry-run` | Preview task plan without executing |
+
+### Git / PRs
+
+| Flag | Description |
+|------|-------------|
 | `--branch-per-task` | Create a new git branch for each task |
+| `--base-branch NAME` | Base branch for task branches |
+| `--create-pr` | Create a PR per task (requires `gh` CLI) |
+| `--draft-pr` | Create PRs as drafts |
+
+### Quality
+
+| Flag | Description |
+|------|-------------|
 | `--no-tests` | Skip tests |
 | `--no-lint` | Skip linting |
 | `--fast` | Skip both tests and linting |
-| `--dry-run` | Preview only |
+
+### PRD / Resume
+
+| Flag | Description |
+|------|-------------|
+| `--prd FILE` | PRD file path (default: `PRD.md`) |
+| `--resume PRD-ID` | Resume a previous run by prd-id |
+
+### Setup
+
+| Flag | Description |
+|------|-------------|
 | `--init` | Install missing skills for the current engine |
+| `--skills-url URL` | Override skills base URL |
 | `--update` | Update gralph to the latest version |
+| `--version` | Show version |
 | `-v, --verbose` | Show debug output |
+
+## PRD Generation
+
+Generate a PRD from a feature description using the `prd` subcommand:
+
+```bash
+gralph prd "Add user authentication with OAuth"
+gralph --codex prd "Implement dark mode toggle"
+gralph prd -o PRD.md "Refactor payment flow"
+```
+
+| Option | Description |
+|--------|-------------|
+| `DESCRIPTION` | Feature description (required, positional) |
+| `-o, --output FILE` | Output file path (default: `tasks/prd-<slug>.md`) |
+
+The subcommand inherits the engine from the parent (`--claude`, `--opencode`, etc.).
 
 ## PRD Format
 
@@ -130,11 +198,44 @@ prd-id: my-feature
 
 GRALPH generates `tasks.yaml` automatically from PRD.md.
 
+## tasks.yaml Format
+
+```yaml
+version: 1
+branchName: gralph/feature-name
+tasks:
+  - id: TASK-001
+    title: "First task description"
+    completed: false
+    dependsOn: []
+    mutex: []
+    touches: []
+    mergeNotes: ""
+  - id: TASK-002
+    title: "Second task"
+    completed: false
+    dependsOn: ["TASK-001"]
+    mutex: ["db-migrations"]
+    touches: ["src/db/schema.py"]
+```
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique task ID (e.g. `TASK-001`) |
+| `title` | Short description of the task |
+| `completed` | Whether the task is done |
+| `dependsOn` | List of task IDs that must complete first |
+| `mutex` | Shared resources to lock during execution |
+| `touches` | Expected files to create or modify |
+| `mergeNotes` | Hints for merge conflict resolution |
+
+Valid mutex names: `db-migrations`, `lockfile`, `router`, `global-config`, and `contract:*` (dynamic pattern).
+
 ## Workflow
 
 1. Install gralph (see [Install](#install))
 2. `cd` into your project and run `gralph --init`
-3. Create `PRD.md` with `prd-id: your-feature` (use `/prd` skill)
+3. Generate a PRD: `gralph prd "your feature"` (or create `PRD.md` manually with `prd-id: your-feature`)
 4. Run `gralph` (or `gralph --opencode`, etc.)
 5. GRALPH creates `artifacts/prd/<prd-id>/` with tasks.yaml
 6. Tasks run in parallel using the DAG scheduler
