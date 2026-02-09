@@ -77,7 +77,7 @@ def _is_external_failure(msg: str) -> bool:
         "buninstallfailederror", "command not found", "enoent", "eacces",
         "permission denied", "network", "timeout", "tls", "econnreset",
         "etimedout", "lockfile", "install", "certificate", "ssl",
-        "rate limit", "quota", "429", "too many requests",
+        "rate limit", "quota", "429", "too many requests", "stalled",
     ]
     return any(p in lower for p in patterns)
 
