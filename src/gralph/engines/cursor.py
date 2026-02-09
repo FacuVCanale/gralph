@@ -11,21 +11,35 @@ from pathlib import Path
 from gralph.engines.base import EngineBase, EngineResult
 
 
+def _is_rate_or_usage_error(error: str, stderr: str = "", stdout: str = "") -> bool:
+    """True if the failure looks like a rate limit or usage limit from Cursor."""
+    combined = " ".join((error, stderr, stdout)).lower()
+    return (
+        "rate limit" in combined
+        or "usage limit" in combined
+        or "you've hit your limit" in combined
+        or '"error":"rate_limit"' in stdout
+    )
+
+
 class CursorEngine(EngineBase):
     name = "cursor"
 
-    def build_cmd(self, prompt: str) -> list[str]:
+    def build_cmd(self, prompt: str, *, use_auto: bool = False) -> list[str]:
         # Use resolved path so subprocess gets an absolute path; on some platforms
         # (e.g. Windows with pipx) the child process resolves PATH differently.
         # Note: prompt is passed via stdin in run_sync to avoid Windows command-line length limits.
         agent = shutil.which("agent") or "agent"
-        return [
+        cmd = [
             agent,
             "--print",
             "--force",
             "--output-format",
             "stream-json",
         ]
+        if use_auto:
+            cmd.extend(["--model", "auto"])
+        return cmd
 
     def parse_output(self, raw: str) -> EngineResult:
         result = EngineResult()
@@ -71,7 +85,44 @@ class CursorEngine(EngineBase):
         timeout: int | None = None,
     ) -> EngineResult:
         """Execute Cursor agent with prompt via stdin to avoid Windows command-line length limits."""
-        cmd = self.build_cmd(prompt)
+        result = self._run_once(prompt, cwd=cwd, log_file=log_file, timeout=timeout)
+
+        # On rate/usage limit, retry once with --model auto (higher limit), then fail if still error
+        if result.error and _is_rate_or_usage_error(result.error, "", ""):
+            # Re-detect from full stderr/stdout; we only have result.error here, so check that
+            try:
+                from gralph import log as glog
+
+                glog.warn(
+                    "Cursor hit rate/usage limit. Retrying with --model auto (higher usage allowance)…"
+                )
+            except Exception:
+                pass
+            retry = self._run_once(
+                prompt,
+                cwd=cwd,
+                log_file=log_file,
+                timeout=timeout,
+                use_auto=True,
+            )
+            if not retry.error and retry.text:
+                return retry
+            # Retry also failed; return retry result so user sees the error
+            return retry
+
+        return result
+
+    def _run_once(
+        self,
+        prompt: str,
+        *,
+        cwd: Path | None = None,
+        log_file: Path | None = None,
+        timeout: int | None = None,
+        use_auto: bool = False,
+    ) -> EngineResult:
+        """Single Cursor agent run. use_auto=True adds --model auto."""
+        cmd = self.build_cmd(prompt, use_auto=use_auto)
         start = time.monotonic()
 
         try:
@@ -101,20 +152,20 @@ class CursorEngine(EngineBase):
         if not result.duration_ms:
             result.duration_ms = elapsed_ms
 
-        # Check for common errors in output
-        from gralph.engines.base import EngineBase
-
+        stderr = (proc.stderr or "").strip()
         error = EngineBase._check_errors(proc.stdout)
         if error and not result.error:
             result.error = error
 
-        # If the subprocess failed, surface stderr to the caller
         if proc.returncode != 0 and not result.error:
-            stderr = (proc.stderr or "").strip()
             if stderr:
                 result.error = stderr.splitlines()[0]
             else:
                 result.error = f"exit code {proc.returncode}"
+
+        # If we still have no error text but stderr has usage/rate message, set it
+        if not result.error and stderr and _is_rate_or_usage_error("", stderr, proc.stdout or ""):
+            result.error = stderr.splitlines()[0]
 
         return result
 
