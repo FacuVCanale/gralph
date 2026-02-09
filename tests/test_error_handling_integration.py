@@ -101,20 +101,6 @@ def _t(id: str, title: str = "", completed: bool = False, depends_on: list[str] 
     return Task(id=id, title=title or id, completed=completed, depends_on=depends_on or [])
 
 
-@pytest.fixture
-def git_repo(tmp_path: Path):
-    """Create a minimal git repo for testing."""
-    import subprocess
-
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test"], cwd=tmp_path, capture_output=True)
-    (tmp_path / "README.md").write_text("# Test")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
-    return tmp_path
-
-
 # ── Stalled process handling ────────────────────────────────────────────────
 
 

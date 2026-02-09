@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from gralph.tasks.model import Task, TaskFile
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """Create a minimal git repo for testing."""
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@test"], cwd=tmp_path, capture_output=True
+    )
+    (tmp_path / "README.md").write_text("# Test")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True
+    )
+    return tmp_path
 
 
 def _make_task(
