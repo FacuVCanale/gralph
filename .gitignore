@@ -15,3 +15,5 @@ dist/
 build/
 .venv/
 *.egg
+
+nul
