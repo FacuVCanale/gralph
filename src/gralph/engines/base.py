@@ -89,6 +89,17 @@ class EngineBase(ABC):
         if error and not result.error:
             result.error = error
 
+        # If the subprocess failed, surface stderr to the caller. Some CLIs (notably
+        # on Windows) report argument/permission issues on stderr and otherwise
+        # produce empty stdout, which makes failures look like "did nothing".
+        if proc.returncode != 0 and not result.error:
+            stderr = (proc.stderr or "").strip()
+            if stderr:
+                # Keep it readable in CLI output
+                result.error = stderr.splitlines()[0]
+            else:
+                result.error = f"exit code {proc.returncode}"
+
         return result
 
     def run_async(

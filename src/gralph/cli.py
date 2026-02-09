@@ -217,6 +217,9 @@ def _run_prd_generation(cfg: Config, description: str, output_path: str) -> None
     from gralph.engines.registry import get_engine
     from gralph.prd import extract_prd_id, slugify
 
+    # All paths are relative to where the user invoked the command.
+    invocation_dir = Path.cwd()
+
     engine = get_engine(cfg.ai_engine)
     err = engine.check_available()
     if err:
@@ -232,12 +235,16 @@ def _run_prd_generation(cfg: Config, description: str, output_path: str) -> None
         glog.warn("PRD skill not found; using built-in prompt. Run 'gralph --init' to install skills.")
         skill_instruction = ""
 
-    # Determine output file
+    # Output file under invocation dir (e.g. <cwd>/tasks/prd-<slug>.md)
     slug = slugify(description)
     if not output_path:
-        tasks_dir = Path("tasks")
+        tasks_dir = invocation_dir / "tasks"
         tasks_dir.mkdir(exist_ok=True)
-        output_path = str(tasks_dir / f"prd-{slug}.md")
+        output_path_abs = tasks_dir / f"prd-{slug}.md"
+    else:
+        output_path_abs = (invocation_dir / output_path).resolve()
+
+    save_path_str = str(output_path_abs)
 
     prompt = f"""{skill_instruction}
 
@@ -247,28 +254,32 @@ Feature request from the user:
 IMPORTANT RULES:
 1. The PRD MUST start with `# PRD: <Title>` followed by `prd-id: {slug}` on the next non-blank line.
 2. Do NOT ask clarifying questions interactively — infer reasonable defaults and note assumptions in the Open Questions section.
-3. Save the PRD to: {output_path}
+3. Save the PRD to: {save_path_str}
 4. Do NOT implement anything — only create the PRD file."""
 
     glog.info(f"Generating PRD with {cfg.ai_engine}…")
-    glog.info(f"Output: {output_path}")
+    glog.info(f"Output: {output_path_abs}")
 
-    result = engine.run_sync(prompt)
+    result = engine.run_sync(prompt, cwd=invocation_dir)
 
-    out = Path(output_path)
+    out = output_path_abs
     if out.is_file():
         # Verify prd-id is present
         prd_id = extract_prd_id(out)
         if prd_id:
-            glog.success(f"PRD created: {output_path} (prd-id: {prd_id})")
+            glog.success(f"PRD created: {out} (prd-id: {prd_id})")
         else:
-            glog.warn(f"PRD created at {output_path} but missing prd-id. Adding it…")
+            glog.warn(f"PRD created at {out} but missing prd-id. Adding it…")
             _inject_prd_id(out, slug)
-            glog.success(f"PRD fixed: {output_path} (prd-id: {slug})")
+            glog.success(f"PRD fixed: {out} (prd-id: {slug})")
     else:
-        glog.error(f"Engine failed to create {output_path}")
+        glog.error(f"Engine failed to create {out}")
         if result.error:
             glog.error(f"Error: {result.error}")
+            if cfg.ai_engine == "cursor" and "agent" in result.error.lower() and "not found" in result.error.lower():
+                glog.console.print(
+                    "[dim]Tip: Run this command from Cursor's integrated terminal, or install the Cursor CLI and add it to PATH: https://cursor.com/docs/cli/installation[/dim]"
+                )
         sys.exit(1)
 
 
