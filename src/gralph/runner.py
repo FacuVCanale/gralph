@@ -25,6 +25,7 @@ from gralph.git_ops import (
     delete_branch,
 )
 from gralph.scheduler import Scheduler, TaskState
+from gralph.io_utils import read_text, write_text
 from gralph.tasks.model import TaskFile
 from gralph.tasks.io import mark_task_complete_in_file
 
@@ -86,7 +87,7 @@ def _extract_error_from_log(log_file: Path) -> str:
     """Get the last non-debug line from a log file."""
     if not log_file.is_file():
         return ""
-    lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = read_text(log_file, errors="replace").splitlines()
     non_debug = [l for l in lines if not l.startswith("[DEBUG]") and l.strip()]
     return non_debug[-1] if non_debug else (lines[-1] if lines else "")
 
@@ -195,7 +196,7 @@ class Runner:
         log_file = Path(tempfile.mktemp(prefix=f"gralph-log-{task_id}-"))
         stream_file = Path(tempfile.mktemp(prefix=f"gralph-stream-{task_id}-"))
 
-        status_file.write_text("setting up")
+        write_text(status_file, "setting up")
 
         try:
             wt_dir, branch_name = create_agent_worktree(
@@ -207,8 +208,8 @@ class Runner:
             )
         except RuntimeError as e:
             log.error(f"Failed to create worktree for {task_id}: {e}")
-            status_file.write_text("failed")
-            output_file.write_text("0 0")
+            write_text(status_file, "failed")
+            write_text(output_file, "0 0")
             self.sched.fail_task(task_id)
             return
 
@@ -221,7 +222,7 @@ class Runner:
         (wt_dir / "progress.txt").touch()
 
         prompt = _build_task_prompt(task_id, title, touches)
-        status_file.write_text("running")
+        write_text(status_file, "running")
 
         # Launch engine async
         proc = self.engine.run_async(
@@ -264,7 +265,7 @@ class Runner:
                         f"Agent {slot.agent_num} stalled for {int(idle)}s. Killing…"
                     )
                     slot.proc.kill()
-                    slot.status_file.write_text("failed")
+                    write_text(slot.status_file, "failed")
                 else:
                     still_active.append(slot)
                     continue
@@ -423,8 +424,9 @@ class Runner:
             report["errorMessage"] = error_msg
             report["failureType"] = "external" if _is_external_failure(error_msg) else "internal"
 
-        (reports_dir / f"{slot.task_id}.json").write_text(
-            json.dumps(report, indent=2), encoding="utf-8"
+        write_text(
+            reports_dir / f"{slot.task_id}.json",
+            json.dumps(report, indent=2),
         )
 
     def _report_deadlock(self) -> None:

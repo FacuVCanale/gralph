@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from gralph.engines.base import EngineBase, EngineResult
+from gralph.io_utils import open_text
 
 
 def _is_rate_or_usage_error(error: str, stderr: str = "", stdout: str = "") -> bool:
@@ -41,8 +42,9 @@ class CursorEngine(EngineBase):
             cmd.extend(["--model", "auto"])
         return cmd
 
-    def parse_output(self, raw: str) -> EngineResult:
+    def parse_output(self, raw: str | None) -> EngineResult:
         result = EngineResult()
+        raw = raw or ""
 
         for line in raw.splitlines():
             if '"type":"result"' in line:
@@ -131,6 +133,8 @@ class CursorEngine(EngineBase):
                 input=prompt,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=cwd,
                 timeout=timeout,
             )
@@ -143,11 +147,11 @@ class CursorEngine(EngineBase):
 
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_file, "a", encoding="utf-8") as f:
+            with open_text(log_file, "a") as f:
                 if proc.stderr:
                     f.write(proc.stderr)
 
-        result = self.parse_output(proc.stdout)
+        result = self.parse_output(proc.stdout or "")
         result.return_code = proc.returncode
         if not result.duration_ms:
             result.duration_ms = elapsed_ms

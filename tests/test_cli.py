@@ -5,11 +5,15 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 # Import the CLI main so we can invoke it with Click's CliRunner
 from gralph.cli import main
+from gralph.config import Config
+from gralph.engines.base import EngineResult
+from gralph.io_utils import read_text, write_text
 
 
 def _run_cli(args: list[str], cwd: Path | None = None, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -168,14 +172,14 @@ class TestCliDryRun:
 
     def test_dry_run_with_minimal_project(self, tmp_path: Path):
         # Minimal project: PRD.md + artifacts/prd/<id>/tasks.yaml
-        (tmp_path / "PRD.md").write_text("# Test\nprd-id: cli-test\n", encoding="utf-8")
+        write_text(tmp_path / "PRD.md", "# Test\nprd-id: cli-test\n")
         run_dir = tmp_path / "artifacts" / "prd" / "cli-test"
         run_dir.mkdir(parents=True)
         tasks_yaml = run_dir / "tasks.yaml"
-        tasks_yaml.write_text(
+        write_text(
+            tasks_yaml,
             "branchName: gralph/cli-test\ntasks:\n"
             "  - id: TASK-001\n    title: One\n    completed: false\n    dependsOn: []\n    mutex: []\n",
-            encoding="utf-8",
         )
         # Point --prd to the tasks.yaml so pipeline uses it (resume path)
         proc = _run_cli(["--dry-run", "--resume", "cli-test"], cwd=tmp_path)
@@ -220,6 +224,44 @@ class TestCliPrdSubcommand:
             return
         err = proc.stdout + proc.stderr
         assert not ("ModuleNotFoundError" in err and "gralph.tasks" in err), f"CLI crashed: {err!r}"
+
+    def test_prd_rename_overwrites_existing_file(self, tmp_path: Path):
+        """When renaming prd-temp.md to prd-<id>.md, overwrite existing target (Windows-safe)."""
+        from gralph.cli import _run_prd_single
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        write_path = tasks_dir / "prd-temp.md"
+        final_path = tasks_dir / "prd-provider-fallback-rate-limit.md"
+
+        # Pre-create target so rename would fail with Path.rename() on Windows
+        write_text(final_path, "old content\n")
+        assert final_path.is_file()
+
+        prd_content = "# PRD: Test\nprd-id: provider-fallback-rate-limit\n\nBody.\n"
+        mock_engine = MagicMock()
+
+        def _on_run_sync(*_args, **_kwargs):
+            write_text(write_path, prd_content)
+            return EngineResult(text="ok")
+
+        mock_engine.run_sync.side_effect = _on_run_sync
+
+        cfg = Config(ai_engine="cursor", verbose=False)
+        _run_prd_single(
+            cfg,
+            mock_engine,
+            tmp_path,
+            "provider fallback rate limit",
+            str(write_path),
+            "",  # output_path: use default naming
+            tasks_dir,
+            write_path,
+        )
+
+        assert final_path.is_file(), "Final PRD file should exist"
+        assert "old content" not in read_text(final_path)
+        assert "provider-fallback-rate-limit" in read_text(final_path)
 
 
 # ── PS1 aliases (optional, if we want to assert they're rewritten) ───────

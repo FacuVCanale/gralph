@@ -5,6 +5,7 @@ Installed as ``gralph`` console_script via pipx / pip.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import click
 
 from gralph import __version__
 from gralph.config import Config
+from gralph.io_utils import read_text, write_text
 
 
 # ── Custom Click group that handles PS1 aliases ──────────────────────
@@ -182,15 +184,19 @@ def main(
 @main.command()
 @click.argument("description")
 @click.option("--output", "-o", default="", help="Output file path (default: tasks/prd-<slug>.md)")
+@click.option("--no-questions", is_flag=True, help="Skip clarifying questions; infer defaults and note in Open Questions (single run).")
 @click.pass_context
-def prd(ctx: click.Context, description: str, output: str) -> None:
+def prd(ctx: click.Context, description: str, output: str, no_questions: bool) -> None:
     """Generate a PRD from a feature description.
+
+    By default, the AI asks 3-5 clarifying questions first; you answer (e.g. 1A, 2C),
+    then the PRD is generated. Use --no-questions to skip and infer defaults.
 
     \b
     EXAMPLES:
       gralph prd "Add user authentication with OAuth"
-      gralph --codex prd "Implement dark mode toggle"
-      gralph --claude prd -o PRD.md "Refactor payment flow"
+      gralph prd --no-questions "Implement dark mode"
+      gralph --codex prd -o PRD.md "Refactor payment flow"
     """
     from gralph import log as glog
 
@@ -208,70 +214,159 @@ def prd(ctx: click.Context, description: str, output: str) -> None:
         skills_base_url=skills_url,
     )
 
-    _run_prd_generation(cfg, description, output)
+    _run_prd_generation(cfg, description, output, no_questions=no_questions)
 
 
-def _run_prd_generation(cfg: Config, description: str, output_path: str) -> None:
+def _run_prd_generation(
+    cfg: Config, description: str, output_path: str, *, no_questions: bool = False
+) -> None:
     """Run an AI engine to generate a PRD from a feature description."""
     from gralph import log as glog
     from gralph.engines.registry import get_engine
     from gralph.prd import extract_prd_id, slugify
 
-    # All paths are relative to where the user invoked the command.
     invocation_dir = Path.cwd()
-
     engine = get_engine(cfg.ai_engine)
     err = engine.check_available()
     if err:
         glog.error(err)
         sys.exit(1)
 
-    # Load PRD skill content
     skill_path = _find_prd_skill(cfg.ai_engine)
     if skill_path:
-        skill_content = skill_path.read_text(encoding="utf-8")
+        skill_content = read_text(skill_path)
         skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
     else:
         glog.warn("PRD skill not found; using built-in prompt. Run 'gralph --init' to install skills.")
         skill_instruction = ""
 
-    # Output file under invocation dir (e.g. <cwd>/tasks/prd-<slug>.md)
-    slug = slugify(description)
+    tasks_dir = invocation_dir / "tasks"
+    tasks_dir.mkdir(exist_ok=True)
     if not output_path:
-        tasks_dir = invocation_dir / "tasks"
-        tasks_dir.mkdir(exist_ok=True)
-        output_path_abs = tasks_dir / f"prd-{slug}.md"
+        write_path_abs = tasks_dir / "prd-temp.md"
     else:
-        output_path_abs = (invocation_dir / output_path).resolve()
+        write_path_abs = (invocation_dir / output_path).resolve()
+    save_path_str = str(write_path_abs)
 
-    save_path_str = str(output_path_abs)
+    if no_questions:
+        _run_prd_single(cfg, engine, invocation_dir, description, save_path_str, output_path, tasks_dir, write_path_abs)
+        return
 
-    prompt = f"""{skill_instruction}
+    # Interactive default: phase 1 — get clarifying questions
+    glog.info(f"Asking clarifying questions with {cfg.ai_engine}…")
+    questions_prompt = f"""{skill_instruction}
+
+Feature request from the user:
+{description}
+
+OUTPUT ONLY 3-5 CLARIFYING QUESTIONS (Step 1 in the skill). Use the format with numbered questions and lettered options (A, B, C, D). Do NOT write the PRD yet. Do NOT create or modify any files — output your response only in your reply. After the last question, output a blank line and then this exact line: ---END_QUESTIONS---"""
+
+    result1 = engine.run_sync(questions_prompt, cwd=invocation_dir)
+    questions_text = result1.text
+    if "---END_QUESTIONS---" in questions_text:
+        questions_text = questions_text.split("---END_QUESTIONS---")[0].strip()
+    questions_text = questions_text.strip()
+
+    if not questions_text and result1.error:
+        glog.error(f"Failed to get questions: {result1.error}")
+        sys.exit(1)
+
+    if questions_text:
+        glog.console.print("[bold]Clarifying questions:[/bold]")
+        glog.console.print(questions_text)
+        glog.console.print()
+        if sys.stdin.isatty():
+            user_answers = click.prompt(
+                "Enter your answers (e.g. 1A, 2C, 3B). Add notes after a comma or on next line if needed",
+                default="",
+                show_default=False,
+            ).strip()
+        else:
+            glog.warn("Not a TTY; skipping input. Generating PRD with inferred defaults.")
+            user_answers = ""
+    else:
+        glog.warn("No questions returned; generating PRD with inferred defaults.")
+        user_answers = ""
+
+    # Phase 2 — generate PRD incorporating answers
+    answers_block = f"\nUser's answers to clarifying questions:\n{user_answers}\n\n" if user_answers else "\n(No answers provided; infer reasonable defaults and note assumptions in Open Questions.)\n\n"
+    prompt2 = f"""{skill_instruction}
+
+Feature request from the user:
+{description}
+{answers_block}
+
+IMPORTANT RULES:
+1. Incorporate the user's answers into the PRD. If no answers were given, infer reasonable defaults and note assumptions in the Open Questions section.
+2. The PRD MUST start with `# PRD: <Title>` (you choose a short, descriptive title).
+3. On the next non-blank line after the title, add `prd-id: <id>` where <id> is a short, URL-safe identifier you choose (lowercase, hyphens only, e.g. provider-fallback-rate-limit). Keep it under 50 characters.
+4. Do NOT ask more questions — generate the full PRD now.
+5. Save the PRD to: {save_path_str}
+6. Do NOT implement anything — only create the PRD file."""
+
+    _run_prd_single(
+        cfg, engine, invocation_dir, description, save_path_str, output_path, tasks_dir, write_path_abs, prompt=prompt2
+    )
+
+
+def _run_prd_single(
+    cfg: Config,
+    engine: "EngineBase",
+    invocation_dir: Path,
+    description: str,
+    save_path_str: str,
+    output_path: str,
+    tasks_dir: Path,
+    write_path_abs: Path,
+    *,
+    prompt: str | None = None,
+) -> None:
+    """Run a single PRD generation (no questions). Uses prompt if given, else builds no-questions prompt."""
+    from gralph import log as glog
+    from gralph.prd import extract_prd_id, slugify
+
+    if prompt is None:
+        skill_path = _find_prd_skill(cfg.ai_engine)
+        if skill_path:
+            skill_content = read_text(skill_path)
+            skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
+        else:
+            skill_instruction = ""
+        prompt = f"""Follow these instructions for creating the PRD:\n\n{skill_instruction}
 
 Feature request from the user:
 {description}
 
 IMPORTANT RULES:
-1. The PRD MUST start with `# PRD: <Title>` followed by `prd-id: {slug}` on the next non-blank line.
-2. Do NOT ask clarifying questions interactively — infer reasonable defaults and note assumptions in the Open Questions section.
-3. Save the PRD to: {save_path_str}
-4. Do NOT implement anything — only create the PRD file."""
+1. The PRD MUST start with `# PRD: <Title>` (you choose a short, descriptive title).
+2. On the next non-blank line after the title, add `prd-id: <id>` where <id> is a short, URL-safe identifier you choose (lowercase, hyphens only, e.g. provider-fallback-rate-limit). Keep it under 50 characters.
+3. Do NOT ask clarifying questions interactively — infer reasonable defaults and note assumptions in the Open Questions section.
+4. Save the PRD to: {save_path_str}
+5. Do NOT implement anything — only create the PRD file."""
 
     glog.info(f"Generating PRD with {cfg.ai_engine}…")
-    glog.info(f"Output: {output_path_abs}")
+    glog.info(f"Output: {write_path_abs}")
 
     result = engine.run_sync(prompt, cwd=invocation_dir)
 
-    out = output_path_abs
+    out = write_path_abs
     if out.is_file():
-        # Verify prd-id is present
         prd_id = extract_prd_id(out)
-        if prd_id:
-            glog.success(f"PRD created: {out} (prd-id: {prd_id})")
-        else:
+        if not prd_id:
+            prd_id = slugify(description)
             glog.warn(f"PRD created at {out} but missing prd-id. Adding it…")
-            _inject_prd_id(out, slug)
-            glog.success(f"PRD fixed: {out} (prd-id: {slug})")
+            _inject_prd_id(out, prd_id)
+        if not output_path:
+            safe_id = slugify(prd_id)
+            if safe_id != prd_id:
+                _normalize_prd_id_in_file(out, safe_id)
+            final_path = tasks_dir / f"prd-{safe_id}.md"
+            if final_path.resolve() != out.resolve():
+                # os.replace overwrites destination if it exists (required on Windows)
+                os.replace(out, final_path)
+                out = final_path
+            prd_id = safe_id
+        glog.success(f"PRD created: {out} (prd-id: {prd_id})")
     else:
         glog.error(f"Engine failed to create {out}")
         if result.error:
@@ -324,7 +419,7 @@ def _find_prd_skill(engine_name: str) -> Path | None:
 
 def _inject_prd_id(prd_file: Path, slug: str) -> None:
     """Insert a prd-id line after the title if missing."""
-    content = prd_file.read_text(encoding="utf-8")
+    content = read_text(prd_file)
     lines = content.splitlines(keepends=True)
 
     for i, line in enumerate(lines):
@@ -337,7 +432,18 @@ def _inject_prd_id(prd_file: Path, slug: str) -> None:
         # No title found — prepend
         lines.insert(0, f"prd-id: {slug}\n\n")
 
-    prd_file.write_text("".join(lines), encoding="utf-8")
+    write_text(prd_file, "".join(lines))
+
+
+def _normalize_prd_id_in_file(prd_file: Path, safe_id: str) -> None:
+    """Replace existing prd-id line with the normalized (URL-safe) id."""
+    content = read_text(prd_file)
+    lines = content.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.startswith("prd-id:"):
+            lines[i] = f"prd-id: {safe_id}\n"
+            break
+    write_text(prd_file, "".join(lines))
 
 
 def _run_pipeline(cfg: Config) -> None:

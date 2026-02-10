@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from gralph import log
+from gralph.io_utils import open_text
 from gralph.prd import slugify
 
 
@@ -183,7 +184,7 @@ def cleanup_agent_worktree(
     if worktree_dir.exists():
         if has_dirty_worktree(cwd=worktree_dir):
             if log_file:
-                with open(log_file, "a", encoding="utf-8") as f:
+                with open_text(log_file, "a") as f:
                     f.write(f"[WARN] Worktree dirty, forcing cleanup: {worktree_dir}\n")
 
     # Try to remove

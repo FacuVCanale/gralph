@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from gralph import git_ops
+from gralph.io_utils import read_text, write_text
 
 
 # ── helpers ──────────────────────────────────────────────────────────
 
 
 def _commit_file(repo: Path, name: str, content: str, msg: str) -> None:
-    (repo / name).write_text(content)
+    write_text(repo / name, content)
     subprocess.run(["git", "add", name], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", msg], cwd=repo, capture_output=True, check=True)
 
@@ -201,14 +202,14 @@ class TestWorktreeCleanup:
             base_branch=base, worktree_base=wt_base, original_dir=git_repo,
         )
         # Make worktree dirty
-        (wt_dir / "dirty.txt").write_text("uncommitted")
+        write_text(wt_dir / "dirty.txt", "uncommitted")
 
         log_file = tmp_path / "cleanup.log"
         git_ops.cleanup_agent_worktree(
             wt_dir, branch, original_dir=git_repo, log_file=log_file,
         )
         assert not wt_dir.is_dir()
-        assert "WARN" in log_file.read_text()
+        assert "WARN" in read_text(log_file)
 
     def test_cleanup_nonexistent_dir(self, git_repo: Path) -> None:
         # Should not raise even if directory doesn't exist
@@ -330,11 +331,11 @@ class TestStaleAgentBranchCleanup:
 class TestGitUtilities:
     def test_has_dirty_worktree(self, git_repo: Path) -> None:
         assert not git_ops.has_dirty_worktree(cwd=git_repo)
-        (git_repo / "dirty.txt").write_text("dirty")
+        write_text(git_repo / "dirty.txt", "dirty")
         assert git_ops.has_dirty_worktree(cwd=git_repo)
 
     def test_add_and_commit(self, git_repo: Path) -> None:
-        (git_repo / "new.txt").write_text("hello")
+        write_text(git_repo / "new.txt", "hello")
         assert git_ops.add_and_commit("add new file", cwd=git_repo)
         assert not git_ops.has_dirty_worktree(cwd=git_repo)
 
@@ -362,7 +363,7 @@ class TestGitUtilities:
         assert "stat.txt" in stat
 
     def test_stash_push_pop(self, git_repo: Path) -> None:
-        (git_repo / "stash.txt").write_text("stash me")
+        write_text(git_repo / "stash.txt", "stash me")
         subprocess.run(["git", "add", "stash.txt"], cwd=git_repo, capture_output=True)
         assert git_ops.has_dirty_worktree(cwd=git_repo)
 

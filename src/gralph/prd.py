@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from gralph import log
+from gralph.io_utils import read_text
 
 
 def extract_prd_id(prd_file: Path) -> str:
@@ -16,7 +17,7 @@ def extract_prd_id(prd_file: Path) -> str:
     """
     if not prd_file.is_file():
         return ""
-    for line in prd_file.read_text(encoding="utf-8").splitlines():
+    for line in read_text(prd_file).splitlines():
         if line.startswith("prd-id:"):
             return line.split(":", 1)[1].strip()
     return ""

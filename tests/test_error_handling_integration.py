@@ -11,6 +11,7 @@ import pytest
 
 from gralph.config import Config
 from gralph.engines.base import EngineBase, EngineResult
+from gralph.io_utils import open_text, read_text, write_text
 from gralph.runner import Runner
 from gralph.scheduler import Scheduler
 from gralph.tasks.model import Task, TaskFile
@@ -55,7 +56,7 @@ class MockEngine(EngineBase):
             # Process that writes to log slowly
             if stderr_file:
                 stderr_file.parent.mkdir(parents=True, exist_ok=True)
-                stderr_file.write_text("start\n")
+                write_text(stderr_file, "start\n")
             cmd = [
                 "python",
                 "-c",
@@ -65,20 +66,20 @@ class MockEngine(EngineBase):
             # Process that exits with error and writes rate limit to stderr
             if stderr_file:
                 stderr_file.parent.mkdir(parents=True, exist_ok=True)
-                stderr_file.write_text("Rate limit exceeded\n")
+                write_text(stderr_file, "Rate limit exceeded\n")
             cmd = ["python", "-c", "import sys; sys.exit(1)"]
         elif self.behavior == "fail":
             # Process that exits with error
             if stderr_file:
                 stderr_file.parent.mkdir(parents=True, exist_ok=True)
-                stderr_file.write_text("SyntaxError: invalid syntax\n")
+                write_text(stderr_file, "SyntaxError: invalid syntax\n")
             cmd = ["python", "-c", "import sys; sys.exit(1)"]
         else:  # success
             # Process that succeeds
             cmd = ["python", "-c", "print('success')"]
 
-        stdout_handle = stdout_file.open("w") if stdout_file else subprocess.PIPE
-        stderr_handle = stderr_file.open("w") if stderr_file else subprocess.PIPE
+        stdout_handle = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
+        stderr_handle = open_text(stderr_file, "w") if stderr_file else subprocess.PIPE
 
         proc = subprocess.Popen(
             cmd,
@@ -127,7 +128,7 @@ class TestStalledProcessHandling:
             wt_dir = git_repo / "wt"
             wt_dir.mkdir(exist_ok=True)
             mock_wt.return_value = (wt_dir, "gralph/agent-1")
-            (git_repo / "tasks.yaml").write_text("branchName: test\ntasks: []")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
 
             # Launch agent
             runner._launch_agent("A", git_repo, git_repo / "worktrees")
@@ -161,7 +162,7 @@ class TestStalledProcessHandling:
             # After kill(), status_file should be marked as failed
             # Note: status_file is written in _reap_finished when killing stalled process
             if slot.status_file.exists():
-                status = slot.status_file.read_text()
+                status = read_text(slot.status_file)
                 assert status == "failed", f"Expected 'failed', got '{status}'"
             
             # Process should be killed (may take a moment)
@@ -186,7 +187,7 @@ class TestStalledProcessHandling:
             wt_dir = git_repo / "wt"
             wt_dir.mkdir(exist_ok=True)
             mock_wt.return_value = (wt_dir, "gralph/agent-1")
-            (git_repo / "tasks.yaml").write_text("branchName: test\ntasks: []")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
 
             runner._launch_agent("A", git_repo, git_repo / "worktrees")
 
@@ -196,7 +197,7 @@ class TestStalledProcessHandling:
 
             # Update log file to simulate activity (process is active)
             slot.log_file.parent.mkdir(parents=True, exist_ok=True)
-            slot.log_file.write_text("working...\n")
+            write_text(slot.log_file, "working...\n")
             slot.last_activity = time.monotonic()  # Just updated (recent activity)
 
             # Reap should not kill it (still active)
@@ -231,7 +232,7 @@ class TestRateLimitHandling:
             wt_dir = git_repo / "wt"
             wt_dir.mkdir(exist_ok=True)
             mock_wt.return_value = (wt_dir, "gralph/agent-1")
-            (git_repo / "tasks.yaml").write_text("branchName: test\ntasks: []")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
 
             runner._launch_agent("A", git_repo, git_repo / "worktrees")
 
@@ -243,8 +244,8 @@ class TestRateLimitHandling:
             if slot.log_file.exists():
                 # The MockEngine should have written to stderr_file, which is log_file
                 # But let's make sure it's there
-                if not slot.log_file.read_text():
-                    slot.log_file.write_text("Rate limit exceeded\n")
+                if not read_text(slot.log_file):
+                    write_text(slot.log_file, "Rate limit exceeded\n")
 
             # Handle finished (will call _handle_failure since it failed)
             runner._handle_finished(slot, git_repo)
@@ -254,7 +255,7 @@ class TestRateLimitHandling:
             assert report_file.exists(), "Report file should be created"
             import json
 
-            report = json.loads(report_file.read_text())
+            report = json.loads(read_text(report_file))
             assert report["status"] == "failed"
             error_msg = report.get("errorMessage", "")
             assert error_msg, "Error message should be present"
@@ -285,7 +286,7 @@ class TestFailureHandling:
             wt_dir = git_repo / "wt"
             wt_dir.mkdir(exist_ok=True)
             mock_wt.return_value = (wt_dir, "gralph/agent-1")
-            (git_repo / "tasks.yaml").write_text("branchName: test\ntasks: []")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
 
             runner._launch_agent("A", git_repo, git_repo / "worktrees")
 
@@ -294,8 +295,8 @@ class TestFailureHandling:
             
             # Ensure log file has the error message
             if slot.log_file.exists():
-                if not slot.log_file.read_text():
-                    slot.log_file.write_text("SyntaxError: invalid syntax\n")
+                if not read_text(slot.log_file):
+                    write_text(slot.log_file, "SyntaxError: invalid syntax\n")
 
             runner._handle_finished(slot, git_repo)
 
@@ -308,7 +309,7 @@ class TestFailureHandling:
             assert report_file.exists()
             import json
 
-            report = json.loads(report_file.read_text())
+            report = json.loads(read_text(report_file))
             assert report["status"] == "failed"
             error_msg = report.get("errorMessage", "")
             assert error_msg, "Error message should be present"
@@ -368,7 +369,7 @@ class TestProcessCleanup:
             wt_dir = git_repo / "wt"
             wt_dir.mkdir(exist_ok=True)
             mock_wt.return_value = (wt_dir, "gralph/agent-1")
-            (git_repo / "tasks.yaml").write_text("branchName: test\ntasks: []")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
 
             runner._launch_agent("A", git_repo, git_repo / "worktrees")
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from gralph import log
 from gralph.config import Config
+from gralph.io_utils import read_text
 from gralph.engines.base import EngineBase
 from gralph.git_ops import (
     checkout,
@@ -108,7 +109,7 @@ def run_reviewer_agent(
     reports_text = ""
     if reports_dir.is_dir():
         for rp in reports_dir.glob("*.json"):
-            reports_text += f"\n{rp.read_text(encoding='utf-8')}"
+            reports_text += f"\n{read_text(rp)}"
 
     prompt = f"""Review the integrated code changes for issues.
 
@@ -140,7 +141,7 @@ Save to {cfg.artifacts_dir}/review-report.json"""
     report_path = Path(cfg.artifacts_dir) / "review-report.json"
     if report_path.is_file():
         try:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text(report_path))
             blockers = [i for i in data.get("issues", []) if i.get("severity") == "blocker"]
             if blockers:
                 log.warn(f"Reviewer found {len(blockers)} blocker(s)")
@@ -159,7 +160,7 @@ def generate_fix_tasks(cfg: Config, tf: TaskFile) -> None:
         return
 
     try:
-        data = json.loads(report_path.read_text(encoding="utf-8"))
+        data = json.loads(read_text(report_path))
     except json.JSONDecodeError:
         return
 

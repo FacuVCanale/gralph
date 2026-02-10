@@ -11,6 +11,7 @@ import pytest
 
 from gralph.config import Config
 from gralph.engines.base import EngineBase, EngineResult
+from gralph.io_utils import open_text, read_text, write_text
 from gralph.runner import Runner, AgentSlot, _meaningful_changes
 from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
@@ -31,7 +32,7 @@ def _t(
 
 
 def _commit_file(repo: Path, name: str, content: str, msg: str) -> None:
-    (repo / name).write_text(content)
+    write_text(repo / name, content)
     subprocess.run(["git", "add", name], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", msg], cwd=repo, capture_output=True, check=True)
 
@@ -53,8 +54,8 @@ class MockEngine(EngineBase):
         stdout_file: Path | None = None,
         stderr_file: Path | None = None,
     ) -> subprocess.Popen:
-        stdout_handle = stdout_file.open("w") if stdout_file else subprocess.PIPE
-        stderr_handle = stderr_file.open("w") if stderr_file else subprocess.PIPE
+        stdout_handle = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
+        stderr_handle = open_text(stderr_file, "w") if stderr_file else subprocess.PIPE
         proc = subprocess.Popen(
             ["python", "-c", "pass"],
             stdout=stdout_handle,
@@ -75,7 +76,7 @@ def _make_runner(git_repo: Path, tasks: list[Task] | None = None) -> tuple[Runne
     runner = Runner(cfg, tf, engine, scheduler)
     runner.cfg.original_dir = str(git_repo)
     (git_repo / "artifacts" / "test" / "reports").mkdir(parents=True, exist_ok=True)
-    (git_repo / "tasks.yaml").write_text("branchName: test\ntasks: []")
+    write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
     return runner, scheduler
 
 
@@ -96,7 +97,7 @@ def _make_successful_slot(
     runner.agent_num += 1
 
     # Add meaningful commit in worktree
-    (wt_dir / "code.py").write_text("print('hello')")
+    write_text(wt_dir / "code.py", "print('hello')")
     subprocess.run(["git", "add", "."], cwd=wt_dir, capture_output=True)
     subprocess.run(["git", "commit", "-m", "implement feature"], cwd=wt_dir, capture_output=True)
 
@@ -109,8 +110,8 @@ def _make_successful_slot(
     output_file = Path(tempfile.mktemp(prefix=f"gralph-output-{task_id}-"))
     log_file = Path(tempfile.mktemp(prefix=f"gralph-log-{task_id}-"))
     stream_file = Path(tempfile.mktemp(prefix=f"gralph-stream-{task_id}-"))
-    status_file.write_text("running")
-    log_file.write_text("")
+    write_text(status_file, "running")
+    write_text(log_file, "")
 
     slot = AgentSlot(
         task_id=task_id,
@@ -149,7 +150,7 @@ class TestRunnerSuccessFlow:
         slot = _make_successful_slot(runner, git_repo, "A")
 
         # Make worktree dirty
-        (slot.worktree_dir / "extra.txt").write_text("uncommitted change")
+        write_text(slot.worktree_dir / "extra.txt", "uncommitted change")
 
         runner._handle_finished(slot, git_repo)
 
@@ -169,7 +170,7 @@ class TestRunnerSuccessFlow:
         slot = _make_successful_slot(runner, git_repo, "A")
 
         # Agent leaves tasks.yaml as an uncommitted modification
-        (slot.worktree_dir / "tasks.yaml").write_text("modified by agent")
+        write_text(slot.worktree_dir / "tasks.yaml", "modified by agent")
 
         # The auto-commit in _handle_success will commit tasks.yaml along with
         # other dirty files, then the revert commands are effectively no-ops.
@@ -246,8 +247,8 @@ class TestRunnerFailureFlow:
         output_file = Path(tempfile.mktemp(prefix="gralph-output-A-"))
         log_file = Path(tempfile.mktemp(prefix="gralph-log-A-"))
         stream_file = Path(tempfile.mktemp(prefix="gralph-stream-A-"))
-        status_file.write_text("running")
-        log_file.write_text("SyntaxError: invalid syntax\n")
+        write_text(status_file, "running")
+        write_text(log_file, "SyntaxError: invalid syntax\n")
 
         slot = AgentSlot(
             task_id="A", agent_num=1, proc=proc,
@@ -281,8 +282,8 @@ class TestRunnerFailureFlow:
         output_file = Path(tempfile.mktemp(prefix="gralph-output-A-"))
         log_file = Path(tempfile.mktemp(prefix="gralph-log-A-"))
         stream_file = Path(tempfile.mktemp(prefix="gralph-stream-A-"))
-        status_file.write_text("running")
-        log_file.write_text("")
+        write_text(status_file, "running")
+        write_text(log_file, "")
 
         slot = AgentSlot(
             task_id="A", agent_num=1, proc=proc,
@@ -307,7 +308,7 @@ class TestRunnerFailureFlow:
         )
 
         # Only change tasks.yaml (not meaningful)
-        (wt_dir / "tasks.yaml").write_text("modified")
+        write_text(wt_dir / "tasks.yaml", "modified")
         subprocess.run(["git", "add", "."], cwd=wt_dir, capture_output=True)
         subprocess.run(["git", "commit", "-m", "only tasks.yaml"], cwd=wt_dir, capture_output=True)
 
@@ -319,8 +320,8 @@ class TestRunnerFailureFlow:
         output_file = Path(tempfile.mktemp(prefix="gralph-output-A-"))
         log_file = Path(tempfile.mktemp(prefix="gralph-log-A-"))
         stream_file = Path(tempfile.mktemp(prefix="gralph-stream-A-"))
-        status_file.write_text("running")
-        log_file.write_text("")
+        write_text(status_file, "running")
+        write_text(log_file, "")
 
         slot = AgentSlot(
             task_id="A", agent_num=1, proc=proc,
@@ -424,7 +425,7 @@ class TestMergeBranchWithFallback:
         # Mock run_sync to resolve the conflict
         def resolve_conflict(prompt, **kwargs):
             # Simulate AI resolving the conflict
-            (git_repo / "fb.txt").write_text("resolved version")
+            write_text(git_repo / "fb.txt", "resolved version")
             subprocess.run(["git", "add", "fb.txt"], cwd=git_repo, capture_output=True)
             subprocess.run(["git", "commit", "--no-edit"], cwd=git_repo, capture_output=True)
             return EngineResult()

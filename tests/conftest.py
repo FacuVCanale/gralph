@@ -1,4 +1,9 @@
-"""Shared fixtures for gralph tests."""
+"""Shared fixtures for gralph tests.
+
+File handling in tests:
+- Use tmp_path for any directory or file creation so tests are isolated and cleaned up.
+- Use gralph.io_utils read_text/write_text for consistent UTF-8 I/O.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from gralph.io_utils import write_text
 from gralph.tasks.model import Task, TaskFile
 
 
@@ -20,7 +26,7 @@ def git_repo(tmp_path: Path) -> Path:
     subprocess.run(
         ["git", "config", "user.email", "test@test"], cwd=tmp_path, capture_output=True
     )
-    (tmp_path / "README.md").write_text("# Test")
+    write_text(tmp_path / "README.md", "# Test")
     subprocess.run(["git", "add", "README.md"], cwd=tmp_path, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True

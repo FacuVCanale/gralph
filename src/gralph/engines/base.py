@@ -8,6 +8,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from gralph.io_utils import open_text
+
 
 @dataclass
 class EngineResult:
@@ -63,6 +65,8 @@ class EngineBase(ABC):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=cwd,
                 timeout=timeout,
             )
@@ -75,11 +79,11 @@ class EngineBase(ABC):
 
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_file, "a", encoding="utf-8") as f:
+            with open_text(log_file, "a") as f:
                 if proc.stderr:
                     f.write(proc.stderr)
 
-        result = self.parse_output(proc.stdout)
+        result = self.parse_output(proc.stdout or "")
         result.return_code = proc.returncode
         if not result.duration_ms:
             result.duration_ms = elapsed_ms
@@ -113,14 +117,16 @@ class EngineBase(ABC):
         """Launch the engine asynchronously, returning the Popen handle."""
         cmd = self.build_cmd(prompt)
 
-        stdout_fh = open(stdout_file, "w", encoding="utf-8") if stdout_file else subprocess.PIPE
-        stderr_fh = open(stderr_file, "a", encoding="utf-8") if stderr_file else subprocess.PIPE
+        stdout_fh = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
+        stderr_fh = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
 
         return subprocess.Popen(
             cmd,
             stdout=stdout_fh,
             stderr=stderr_fh,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=cwd,
         )
 

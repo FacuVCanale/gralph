@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from gralph.io_utils import write_text
 from gralph.tasks.model import Task, TaskFile
 from gralph.tasks.validate import detect_cycles, validate, load_mutex_catalog
 
@@ -196,7 +197,7 @@ class TestMutexCatalog:
             }
         }
         catalog_file = tmp_path / "mutex-catalog.json"
-        catalog_file.write_text(json.dumps(catalog_data))
+        write_text(catalog_file, json.dumps(catalog_data))
 
         result = load_mutex_catalog(tmp_path)
         assert result is not None
@@ -219,7 +220,7 @@ class TestMutexCatalog:
         """Unknown mutex is flagged when catalog exists."""
         catalog_data = {"mutex": {"db-migrations": {}}}
         catalog_file = tmp_path / "mutex-catalog.json"
-        catalog_file.write_text(json.dumps(catalog_data))
+        write_text(catalog_file, json.dumps(catalog_data))
 
         tf = _tf([_t("A", mutex=["unknown-mutex"])])
         errors = validate(tf, base_dir=tmp_path)
@@ -229,7 +230,7 @@ class TestMutexCatalog:
         """Known mutex passes validation when catalog exists."""
         catalog_data = {"mutex": {"db-migrations": {}}}
         catalog_file = tmp_path / "mutex-catalog.json"
-        catalog_file.write_text(json.dumps(catalog_data))
+        write_text(catalog_file, json.dumps(catalog_data))
 
         tf = _tf([_t("A", mutex=["db-migrations"])])
         errors = validate(tf, base_dir=tmp_path)
@@ -239,7 +240,7 @@ class TestMutexCatalog:
         """Contract mutexes are valid even when not in catalog."""
         catalog_data = {"mutex": {"db-migrations": {}}}
         catalog_file = tmp_path / "mutex-catalog.json"
-        catalog_file.write_text(json.dumps(catalog_data))
+        write_text(catalog_file, json.dumps(catalog_data))
 
         tf = _tf([_t("A", mutex=["contract:auth-api"])])
         errors = validate(tf, base_dir=tmp_path)

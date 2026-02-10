@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from gralph.engines.base import EngineBase
+from gralph.io_utils import write_text
 from gralph.runner import _extract_error_from_log, _is_external_failure
 from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
@@ -103,22 +104,22 @@ class TestExtractErrorFromLog:
 
     def test_empty_file_returns_empty(self, tmp_path: Path):
         log = tmp_path / "out.log"
-        log.write_text("")
+        write_text(log, "")
         assert _extract_error_from_log(log) == ""
 
     def test_only_debug_lines_returns_last_line(self, tmp_path: Path):
         log = tmp_path / "out.log"
-        log.write_text("[DEBUG] a\n[DEBUG] b\n[DEBUG] c\n")
+        write_text(log, "[DEBUG] a\n[DEBUG] b\n[DEBUG] c\n")
         assert _extract_error_from_log(log) == "[DEBUG] c"
 
     def test_last_non_debug_line_returned(self, tmp_path: Path):
         log = tmp_path / "out.log"
-        log.write_text("[DEBUG] x\nError: rate limit exceeded\n[DEBUG] y\n")
+        write_text(log, "[DEBUG] x\nError: rate limit exceeded\n[DEBUG] y\n")
         assert _extract_error_from_log(log) == "Error: rate limit exceeded"
 
     def test_single_error_line(self, tmp_path: Path):
         log = tmp_path / "out.log"
-        log.write_text("Permission denied\n")
+        write_text(log, "Permission denied\n")
         assert _extract_error_from_log(log) == "Permission denied"
 
 
@@ -264,6 +265,6 @@ class TestTasksIoErrors:
         from gralph.tasks.io import load_task_file
 
         bad = tmp_path / "tasks.yaml"
-        bad.write_text("tasks:\n  - id: A\n    title: [unclosed\n")
+        write_text(bad, "tasks:\n  - id: A\n    title: [unclosed\n")
         with pytest.raises(Exception):  # ruamel or yaml error
             load_task_file(bad)
