@@ -83,13 +83,27 @@ def _is_external_failure(msg: str) -> bool:
     return any(p in lower for p in patterns)
 
 
-def _extract_error_from_log(log_file: Path) -> str:
-    """Get the last non-debug line from a log file."""
-    if not log_file.is_file():
-        return ""
-    lines = read_text(log_file, errors="replace").splitlines()
-    non_debug = [l for l in lines if not l.startswith("[DEBUG]") and l.strip()]
-    return non_debug[-1] if non_debug else (lines[-1] if lines else "")
+def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) -> str:
+    """Get the most relevant error line from stderr or stdout logs."""
+    if log_file.is_file():
+        lines = read_text(log_file, errors="replace").splitlines()
+        non_debug = [l for l in lines if not l.startswith("[DEBUG]") and l.strip()]
+        if non_debug:
+            return non_debug[-1]
+        if lines:
+            return lines[-1]
+
+    if stream_file and stream_file.is_file():
+        stream = read_text(stream_file, errors="replace")
+        err = EngineBase._check_errors(stream)
+        if err:
+            return err
+        for line in reversed(stream.splitlines()):
+            lower = line.lower()
+            if "error" in lower or "exception" in lower or "traceback" in lower:
+                return line.strip()
+
+    return ""
 
 
 def _meaningful_changes(base: str, cwd: Path) -> bool:
@@ -120,6 +134,8 @@ class Runner:
         self.active: list[AgentSlot] = []
         self.completed_branches: list[str] = []
         self.completed_task_ids: list[str] = []
+        self.retry_counts: dict[str, int] = {}
+        self.retry_after: dict[str, float] = {}
 
     def run(self) -> bool:
         """Execute all tasks. Returns ``True`` on success."""
@@ -162,7 +178,7 @@ class Runner:
             # 3. Launch new tasks
             slots = self.cfg.max_parallel - running
             if slots > 0:
-                ready = self.sched.get_ready()
+                ready = self._get_ready_tasks()
                 to_start = ready[:slots]
                 for task_id in to_start:
                     self._launch_agent(task_id, original_dir, worktree_base)
@@ -175,6 +191,19 @@ class Runner:
             time.sleep(0.5)
 
         return True
+
+    def _get_ready_tasks(self) -> list[str]:
+        """Return ready tasks, honoring retry delays."""
+        ready: list[str] = []
+        now = time.monotonic()
+        for tid in self.sched.get_ready():
+            retry_at = self.retry_after.get(tid)
+            if retry_at and retry_at > now:
+                continue
+            if retry_at and retry_at <= now:
+                self.retry_after.pop(tid, None)
+            ready.append(tid)
+        return ready
 
     def _launch_agent(self, task_id: str, original_dir: Path, worktree_base: Path) -> None:
         self.agent_num += 1
@@ -280,7 +309,7 @@ class Runner:
         title = task.title if task else slot.task_id
 
         # Persist log
-        self._persist_log(slot.task_id, slot.log_file, original_dir)
+        self._persist_log(slot.task_id, slot.log_file, slot.stream_file, original_dir)
 
         # Check success
         rc = slot.proc.returncode
@@ -292,7 +321,15 @@ class Runner:
             self._handle_success(slot, original_dir, title, commits)
         else:
             # Failure
-            self._handle_failure(slot, original_dir, title)
+            err_msg = _extract_error_from_logs(slot.log_file, slot.stream_file)
+            if not err_msg:
+                if rc != 0:
+                    err_msg = f"exit code {rc}"
+                elif commits == 0:
+                    err_msg = "Agent exited without creating any commits"
+                elif not meaningful:
+                    err_msg = "No meaningful changes (only tasks.yaml/progress.txt)"
+            self._handle_failure(slot, original_dir, title, err_msg)
 
         # Cleanup temp files
         for f in [slot.status_file, slot.output_file, slot.log_file, slot.stream_file]:
@@ -356,7 +393,15 @@ class Runner:
             )
 
         # Save report
-        self._save_report(slot, original_dir, "done", commits)
+        retries_used = self.retry_counts.get(slot.task_id, 0)
+        self._save_report(
+            slot,
+            original_dir,
+            "done",
+            commits,
+            attempt=retries_used + 1,
+            retries=retries_used,
+        )
 
         # Cleanup worktree
         cleanup_agent_worktree(
@@ -366,15 +411,46 @@ class Runner:
             log_file=slot.log_file,
         )
 
-    def _handle_failure(self, slot: AgentSlot, original_dir: Path, title: str) -> None:
-        self.sched.fail_task(slot.task_id)
-        log.console.print(f"  [red]✗[/red] {title[:45]} ({slot.task_id})")
 
-        err_msg = _extract_error_from_log(slot.log_file)
+    def _handle_failure(
+        self,
+        slot: AgentSlot,
+        original_dir: Path,
+        title: str,
+        err_msg: str,
+    ) -> None:
+        retries_used = self.retry_counts.get(slot.task_id, 0)
+        attempt = retries_used + 1
+        max_attempts = self.cfg.max_retries + 1
+        should_retry = self._should_retry(err_msg, retries_used)
+
+        if should_retry:
+            self.retry_counts[slot.task_id] = retries_used + 1
+            delay = max(self.cfg.retry_delay, 0)
+            if delay:
+                self.retry_after[slot.task_id] = time.monotonic() + delay
+            self.sched.retry_task(slot.task_id)
+            log.console.print(
+                f"  [yellow]RETRY[/yellow] {title[:45]} ({slot.task_id}) "
+                f"in {delay}s (attempt {attempt + 1}/{max_attempts})"
+            )
+        else:
+            self.sched.fail_task(slot.task_id)
+            log.console.print(f"  [red]x[/red] {title[:45]} ({slot.task_id})")
+
         if err_msg:
             log.console.print(f"[dim]    Error: {err_msg}[/dim]")
 
-        self._save_report(slot, original_dir, "failed", 0, err_msg)
+        status = "retrying" if should_retry else "failed"
+        self._save_report(
+            slot,
+            original_dir,
+            status,
+            0,
+            err_msg,
+            attempt=attempt,
+            retries=retries_used,
+        )
 
         cleanup_agent_worktree(
             slot.worktree_dir,
@@ -383,13 +459,21 @@ class Runner:
             log_file=slot.log_file,
         )
 
-    def _persist_log(self, task_id: str, log_file: Path, original_dir: Path) -> None:
+    def _persist_log(
+        self,
+        task_id: str,
+        log_file: Path,
+        stream_file: Path,
+        original_dir: Path,
+    ) -> None:
         if not self.cfg.artifacts_dir:
             return
         reports_dir = original_dir / self.cfg.artifacts_dir / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
         if log_file.is_file():
             shutil.copy2(log_file, reports_dir / f"{task_id}.log")
+        if stream_file.is_file():
+            shutil.copy2(stream_file, reports_dir / f"{task_id}.out")
 
     def _save_report(
         self,
@@ -398,6 +482,9 @@ class Runner:
         status: str,
         commits: int,
         error_msg: str = "",
+        *,
+        attempt: int | None = None,
+        retries: int | None = None,
     ) -> None:
         if not self.cfg.artifacts_dir:
             return
@@ -420,6 +507,11 @@ class Runner:
             "changedFiles": ",".join(files),
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if attempt is not None:
+            report["attempt"] = attempt
+        if retries is not None:
+            report["retries"] = retries
+        report["maxRetries"] = self.cfg.max_retries
         if error_msg:
             report["errorMessage"] = error_msg
             report["failureType"] = "external" if _is_external_failure(error_msg) else "internal"
@@ -449,3 +541,11 @@ class Runner:
             if self.sched.state(tid) == TaskState.PENDING:
                 reason = self.sched.explain_block(tid)
                 log.console.print(f"  {tid}: {reason}")
+
+    def _should_retry(self, err_msg: str, retries_used: int) -> bool:
+        """Return True if this error should be retried."""
+        if self.cfg.max_retries <= 0:
+            return False
+        if retries_used >= self.cfg.max_retries:
+            return False
+        return _is_external_failure(err_msg)

@@ -262,6 +262,48 @@ class TestRunnerFailureFlow:
         assert scheduler.state("A") == TaskState.FAILED
         assert not wt_dir.is_dir()
 
+    def test_error_extracted_from_stdout(self, git_repo: Path) -> None:
+        runner, scheduler = _make_runner(git_repo)
+        scheduler.start_task("A")
+
+        base = git_ops.current_branch(cwd=git_repo)
+        wt_base = git_repo / "worktrees"
+        wt_base.mkdir(exist_ok=True)
+        wt_dir, branch = git_ops.create_agent_worktree(
+            "A", 1, base_branch=base, worktree_base=wt_base, original_dir=git_repo,
+        )
+
+        # Failed process (rc=1)
+        proc = subprocess.Popen(
+            ["python", "-c", "import sys; sys.exit(1)"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        proc.wait()
+
+        import tempfile
+        status_file = Path(tempfile.mktemp(prefix="gralph-status-A-"))
+        output_file = Path(tempfile.mktemp(prefix="gralph-output-A-"))
+        log_file = Path(tempfile.mktemp(prefix="gralph-log-A-"))
+        stream_file = Path(tempfile.mktemp(prefix="gralph-stream-A-"))
+        write_text(status_file, "running")
+        write_text(log_file, "")
+        write_text(stream_file, '{"type":"error","error":{"message":"Bad auth"}}\n')
+
+        slot = AgentSlot(
+            task_id="A", agent_num=1, proc=proc,
+            worktree_dir=wt_dir, branch_name=branch,
+            status_file=status_file, output_file=output_file,
+            log_file=log_file, stream_file=stream_file,
+        )
+
+        runner._handle_finished(slot, git_repo)
+
+        report_file = git_repo / "artifacts" / "test" / "reports" / "A.json"
+        assert report_file.exists()
+        import json
+        report = json.loads(read_text(report_file))
+        assert "Bad auth" in report.get("errorMessage", "")
+
     def test_no_commits_treated_as_failure(self, git_repo: Path) -> None:
         runner, scheduler = _make_runner(git_repo)
         scheduler.start_task("A")

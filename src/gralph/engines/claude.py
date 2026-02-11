@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 from gralph.engines.base import EngineBase, EngineResult
 
@@ -11,8 +12,11 @@ class ClaudeEngine(EngineBase):
     name = "claude"
 
     def build_cmd(self, prompt: str) -> list[str]:
+        # Use resolved path so subprocess gets an absolute path; on some platforms
+        # (e.g. Windows with pipx) the child process resolves PATH differently.
+        claude = shutil.which("claude") or "claude"
         return [
-            "claude",
+            claude,
             "--dangerously-skip-permissions",
             "--verbose",
             "-p",
@@ -38,8 +42,6 @@ class ClaudeEngine(EngineBase):
         return result
 
     def check_available(self) -> str | None:
-        import shutil
-
         if not shutil.which("claude"):
             return "Claude Code CLI not found. Install from https://github.com/anthropics/claude-code"
         return None

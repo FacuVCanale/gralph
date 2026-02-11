@@ -557,7 +557,7 @@ def _run_pipeline(cfg: Config) -> None:
     init_artifacts_dir(cfg)
 
     # ── Create progress.txt if missing ───────────────────────────
-    progress = Path(cfg.run_dir or ".") / "progress.txt"
+    progress = Path(cfg.artifacts_dir or ".") / "progress.txt"
     if not progress.is_file():
         progress.parent.mkdir(parents=True, exist_ok=True)
         progress.touch()
@@ -580,6 +580,21 @@ def _run_pipeline(cfg: Config) -> None:
     notify_done()
 
 
+def _try_extract_tasks_yaml_from_result(text: str, output: Path) -> bool:
+    """If result.text contains valid tasks.yaml structure, write it. Return True if written."""
+    if not text or "branchName:" not in text or "tasks:" not in text:
+        return False
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if "branchName:" in line:
+            yaml_content = "\n".join(lines[i:]).strip()
+            if "tasks:" in yaml_content:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                write_text(output, yaml_content)
+                return True
+    return False
+
+
 def _run_metadata_agent(engine: object, prd_path: Path, output: Path) -> None:
     """Run the metadata agent to generate tasks.yaml from a PRD."""
     from gralph import log as glog
@@ -587,9 +602,15 @@ def _run_metadata_agent(engine: object, prd_path: Path, output: Path) -> None:
 
     assert isinstance(engine, EngineBase)
 
-    prompt = f"""Read the PRD file and convert it to tasks.yaml format.
+    # Inline PRD content so all engines receive it (some don't support @path)
+    prd_content = read_text(prd_path)
 
-@{prd_path}
+    prompt = f"""Convert this PRD to tasks.yaml format.
+
+PRD content:
+---
+{prd_content}
+---
 
 Create a tasks.yaml file with this EXACT format:
 
@@ -617,8 +638,12 @@ Rules:
 Save the file as {output}.
 Do NOT implement anything - only create the tasks.yaml file."""
 
-    result = engine.run_sync(prompt)
+    cwd = Path.cwd()
+    result = engine.run_sync(prompt, cwd=cwd)
 
+    if not output.is_file():
+        # Fallback: some engines output YAML in result.text instead of writing to disk
+        _try_extract_tasks_yaml_from_result(result.text, output)
     if not output.is_file():
         glog.error(f"Metadata agent failed to create {output}")
         if result.error:

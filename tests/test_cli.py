@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Import the CLI main so we can invoke it with Click's CliRunner
 from gralph.cli import main
 from gralph.config import Config
-from gralph.engines.base import EngineResult
+from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import read_text, write_text
 
 
@@ -186,6 +188,204 @@ class TestCliDryRun:
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "dry run" in proc.stdout.lower() or "Dry run" in proc.stdout
         assert "TASK-001" in proc.stdout or "One" in proc.stdout
+
+    def test_dry_run_invokes_metadata_agent_when_tasks_yaml_missing(
+        self, cli_runner, tmp_path: Path
+    ):
+        """When tasks.yaml does not exist, metadata agent runs; mock engine creates it."""
+        prd_content = "# PRD: Meta Test\nprd-id: meta-test\n\nBody.\n"
+        write_text(tmp_path / "prd-meta.md", prd_content)
+
+        minimal_tasks = (
+            "branchName: gralph/meta-test\n"
+            "tasks:\n"
+            "  - id: TASK-001\n    title: One\n    completed: false\n    dependsOn: []\n    mutex: []\n"
+        )
+
+        class _MetadataTestEngine(EngineBase):
+            def build_cmd(self, prompt: str) -> list[str]:
+                return [sys.executable, "-c", "pass"]
+
+            def parse_output(self, raw: str) -> EngineResult:
+                return EngineResult(text="ok")
+
+            def run_sync(self, prompt, **kwargs):
+                match = re.search(r"Save the file as ([^\n]+)", prompt)
+                if match:
+                    out_path = Path(match.group(1).strip().rstrip("."))
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    write_text(out_path, minimal_tasks)
+                return EngineResult(text="ok")
+
+        mock_engine = _MetadataTestEngine()
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("gralph.engines.registry.get_engine", return_value=mock_engine):
+                r = cli_runner.invoke(
+                    main,
+                    ["--codex", "--dry-run", "--prd", "prd-meta.md"],
+                    obj={},
+                    catch_exceptions=False,
+                )
+        finally:
+            os.chdir(old_cwd)
+        assert r.exit_code == 0, r.output
+        assert "dry run" in r.output.lower() or "Dry run" in r.output
+        assert "TASK-001" in r.output or "One" in r.output
+
+
+# ── Full pipeline run (no --dry-run) ─────────────────────────────────────
+# Exercises code paths after dry-run (e.g. progress.txt, Runner) so missing
+# Config attributes (e.g. run_dir vs artifacts_dir) are caught.
+
+
+class TestCliFullPipelineRun:
+    """Pipeline run without --dry-run must not crash on Config attribute access."""
+
+    def test_resume_run_creates_progress_and_exits_success(self, cli_runner, tmp_path: Path):
+        """Running with --resume (no --dry-run) reaches progress.txt creation and Runner; no AttributeError on cfg.run_dir."""
+        write_text(tmp_path / "PRD.md", "# Test\nprd-id: cli-test\n")
+        run_dir = tmp_path / "artifacts" / "prd" / "cli-test"
+        run_dir.mkdir(parents=True)
+        write_text(
+            run_dir / "tasks.yaml",
+            "branchName: gralph/cli-test\ntasks:\n"
+            "  - id: TASK-001\n    title: One\n    completed: false\n    dependsOn: []\n    mutex: []\n",
+        )
+        subprocess.run(
+            ["git", "init"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        write_text(tmp_path / "dummy", "x")
+        subprocess.run(
+            ["git", "add", "dummy"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_EMAIL": "t@t.com",
+                "GIT_AUTHOR_NAME": "T",
+                "GIT_COMMITTER_EMAIL": "t@t.com",
+                "GIT_COMMITTER_NAME": "T",
+            },
+        )
+        mock_runner_instance = MagicMock()
+        mock_runner_instance.run.return_value = True
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("gralph.runner.Runner", return_value=mock_runner_instance):
+                r = cli_runner.invoke(
+                    main,
+                    ["--codex", "--resume", "cli-test"],
+                    obj={},
+                    catch_exceptions=False,
+                )
+        finally:
+            os.chdir(old_cwd)
+        assert r.exit_code == 0, r.output
+        # progress.txt is created under artifacts/run-<ts> (set by init_artifacts_dir)
+        artifacts = tmp_path / "artifacts"
+        progress_files = list(artifacts.rglob("progress.txt"))
+        assert len(progress_files) >= 1, f"expected progress.txt under {artifacts}"
+
+    def test_fresh_prd_run_creates_progress_and_exits_success(
+        self, cli_runner, tmp_path: Path
+    ):
+        """Running with --prd (no --resume, no --dry-run) reaches progress.txt; same cfg.artifacts_dir path."""
+        prd_content = "# PRD: Fresh\nprd-id: fresh-test\n\nBody.\n"
+        write_text(tmp_path / "PRD.md", prd_content)
+        minimal_tasks = (
+            "branchName: gralph/fresh-test\n"
+            "tasks:\n"
+            "  - id: TASK-001\n    title: One\n    completed: false\n    dependsOn: []\n    mutex: []\n"
+        )
+
+        class _FreshTestEngine(EngineBase):
+            def build_cmd(self, prompt: str) -> list[str]:
+                return [sys.executable, "-c", "pass"]
+
+            def parse_output(self, raw: str) -> EngineResult:
+                return EngineResult(text="ok")
+
+            def run_sync(self, prompt, **kwargs):
+                out_path = tmp_path / "artifacts" / "prd" / "fresh-test" / "tasks.yaml"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                write_text(out_path, minimal_tasks)
+                return EngineResult(text="ok")
+
+        subprocess.run(
+            ["git", "init"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        write_text(tmp_path / "dummy", "x")
+        subprocess.run(
+            ["git", "add", "dummy"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_EMAIL": "t@t.com",
+                "GIT_AUTHOR_NAME": "T",
+                "GIT_COMMITTER_EMAIL": "t@t.com",
+                "GIT_COMMITTER_NAME": "T",
+            },
+        )
+        mock_runner_instance = MagicMock()
+        mock_runner_instance.run.return_value = True
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("gralph.engines.registry.get_engine", return_value=_FreshTestEngine()):
+                with patch("gralph.runner.Runner", return_value=mock_runner_instance):
+                    r = cli_runner.invoke(
+                        main,
+                        ["--codex", "--prd", "PRD.md"],
+                        obj={},
+                        catch_exceptions=False,
+                    )
+        finally:
+            os.chdir(old_cwd)
+        assert r.exit_code == 0, r.output
+        progress_files = list((tmp_path / "artifacts").rglob("progress.txt"))
+        assert len(progress_files) >= 1
+
+
+# ── Config attributes used by pipeline ───────────────────────────────────
+# Ensures Config has all attributes the pipeline expects (e.g. artifacts_dir, not run_dir).
+
+
+class TestConfigPipelineAttributes:
+    """Config must define every attribute accessed in _run_pipeline."""
+
+    def test_config_has_artifacts_dir_for_progress_path(self):
+        """Pipeline uses cfg.artifacts_dir for progress.txt path; must exist on Config."""
+        cfg = Config()
+        assert hasattr(cfg, "artifacts_dir")
+        progress = Path(cfg.artifacts_dir or ".") / "progress.txt"
+        assert progress.name == "progress.txt"
 
 
 # ── --init (must exit 0, no crash) ──────────────────────────────────────

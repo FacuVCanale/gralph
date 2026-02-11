@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -19,7 +20,10 @@ class OpenCodeEngine(EngineBase):
         self.model = model
 
     def build_cmd(self, prompt: str) -> list[str]:
-        cmd = ["opencode", "run", "--format", "json"]
+        # Use resolved path so subprocess gets an absolute path; on some platforms
+        # (e.g. Windows with pipx) the child process resolves PATH differently.
+        opencode = shutil.which("opencode") or "opencode"
+        cmd = [opencode, "run", "--format", "json"]
         if self.model:
             cmd += ["--model", self.model]
         cmd.append(prompt)
@@ -132,8 +136,6 @@ class OpenCodeEngine(EngineBase):
         return result
 
     def check_available(self) -> str | None:
-        import shutil
-
         if not shutil.which("opencode"):
             return "OpenCode CLI not found. Install from https://opencode.ai/docs/"
         return None

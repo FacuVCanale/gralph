@@ -116,6 +116,12 @@ class Scheduler:
         self._unlock_mutex(task_id)
         log.debug(f"Task {task_id}: running -> failed (mutex released)")
 
+    def retry_task(self, task_id: str) -> None:
+        """Return a running task to pending for retry."""
+        self._state[task_id] = TaskState.PENDING
+        self._unlock_mutex(task_id)
+        log.debug(f"Task {task_id}: running -> pending (retry)")
+
     # ── diagnostics ──────────────────────────────────────────────
 
     def check_deadlock(self) -> bool:

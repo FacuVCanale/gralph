@@ -13,7 +13,7 @@ from gralph.config import Config
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import open_text, read_text, write_text
 from gralph.runner import Runner
-from gralph.scheduler import Scheduler
+from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
 
 
@@ -218,7 +218,7 @@ class TestRateLimitHandling:
     def test_rate_limit_error_detected_in_report(self, git_repo: Path):
         """Rate limit errors are marked as external failures in reports."""
         tf = _tf([_t("A", "Task A")])
-        cfg = Config(max_parallel=1, base_branch="main", artifacts_dir="artifacts/test")
+        cfg = Config(max_parallel=1, base_branch="main", artifacts_dir="artifacts/test", max_retries=0)
         engine = MockEngine(behavior="rate_limit")
         scheduler = Scheduler(tf)
 
@@ -261,6 +261,44 @@ class TestRateLimitHandling:
             assert error_msg, "Error message should be present"
             assert "rate limit" in error_msg.lower()
             assert report.get("failureType") == "external"
+
+    def test_rate_limit_error_schedules_retry(self, git_repo: Path):
+        """External failures should schedule a retry when retries are available."""
+        tf = _tf([_t("A", "Task A")])
+        cfg = Config(
+            max_parallel=1,
+            base_branch="main",
+            artifacts_dir="artifacts/test",
+            max_retries=1,
+            retry_delay=0,
+        )
+        engine = MockEngine(behavior="rate_limit")
+        scheduler = Scheduler(tf)
+
+        runner = Runner(cfg, tf, engine, scheduler)
+        runner.cfg.original_dir = str(git_repo)
+        runner.cfg.base_branch = "main"
+        (git_repo / "artifacts" / "test" / "reports").mkdir(parents=True, exist_ok=True)
+
+        with patch("gralph.runner.create_agent_worktree") as mock_wt, \
+             patch("gralph.runner.cleanup_agent_worktree"):
+            wt_dir = git_repo / "wt"
+            wt_dir.mkdir(exist_ok=True)
+            mock_wt.return_value = (wt_dir, "gralph/agent-1")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
+
+            runner._launch_agent("A", git_repo, git_repo / "worktrees")
+
+            slot = runner.active[0]
+            slot.proc.wait(timeout=5)
+
+            if slot.log_file.exists() and not read_text(slot.log_file):
+                write_text(slot.log_file, "Rate limit exceeded\n")
+
+            runner._handle_finished(slot, git_repo)
+
+            assert scheduler.state("A") == TaskState.PENDING
+            assert runner.retry_counts.get("A") == 1
 
 
 # ── Failure handling ────────────────────────────────────────────────────────
