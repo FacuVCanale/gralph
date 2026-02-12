@@ -1,0 +1,14 @@
+TASK-001: Implement GeminiEngine adapter in src/gralph/engines/gemini.py
+
+Status: COMPLETED
+
+Changes:
+- Created src/gralph/engines/gemini.py — GeminiEngine adapter with:
+  - build_cmd(): builds gemini CLI command with -p prompt and --output-format json
+  - parse_output(): parses JSON response/result/text fields, supports both usage and usageMetadata token formats
+  - run_sync(): overrides base to pass prompt via stdin (avoids command-line length limits)
+  - run_async(): overrides base to pass prompt via stdin
+  - check_available(): checks for gemini binary in PATH
+- Updated src/gralph/engines/registry.py — added GeminiEngine to get_engine() and ENGINE_NAMES
+- Updated src/gralph/cli.py — added --gemini CLI flag, banner display, and PRD skill path
+- Updated tests/test_engines.py — added TestGeminiEngine class with 10 tests covering all methods

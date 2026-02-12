@@ -12,6 +12,7 @@ from gralph.engines.base import EngineResult
 from gralph.engines.claude import ClaudeEngine
 from gralph.engines.codex import CodexEngine
 from gralph.engines.cursor import CursorEngine
+from gralph.engines.gemini import GeminiEngine
 from gralph.engines.opencode import OpenCodeEngine
 from gralph.engines.registry import ENGINE_NAMES, get_engine
 
@@ -24,13 +25,14 @@ class TestEngineRegistry:
             ("opencode", OpenCodeEngine),
             ("codex", CodexEngine),
             ("cursor", CursorEngine),
+            ("gemini", GeminiEngine),
         ],
     )
     def test_get_engine_returns_expected_adapter(self, name: str, expected_cls: type) -> None:
         assert isinstance(get_engine(name), expected_cls)
 
     def test_engine_names_include_all_supported_providers(self) -> None:
-        assert set(ENGINE_NAMES) == {"claude", "opencode", "codex", "cursor"}
+        assert set(ENGINE_NAMES) == {"claude", "opencode", "codex", "cursor", "gemini"}
 
     def test_unknown_engine_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -281,4 +283,101 @@ class TestCursorEngine:
     def test_check_available_reports_missing_binary(self) -> None:
         with patch("gralph.engines.cursor.shutil.which", return_value=None):
             engine = CursorEngine()
+            assert engine.check_available() is not None
+
+
+class TestGeminiEngine:
+    def test_build_cmd_uses_resolved_path_when_available(self) -> None:
+        with patch("gralph.engines.gemini.shutil.which", return_value="/usr/bin/gemini"):
+            engine = GeminiEngine()
+            cmd = engine.build_cmd("hello")
+
+        assert cmd[0] == "/usr/bin/gemini"
+        assert "-p" in cmd
+        assert "--output-format" in cmd
+        assert "json" in cmd
+
+    def test_build_cmd_fallback_to_gemini_when_not_in_path(self) -> None:
+        with patch("gralph.engines.gemini.shutil.which", return_value=None):
+            engine = GeminiEngine()
+            cmd = engine.build_cmd("hello")
+
+        assert cmd[0] == "gemini"
+
+    def test_parse_output_extracts_response_and_usage(self) -> None:
+        engine = GeminiEngine()
+        raw = '{"response":"done","usage":{"input_tokens":10,"output_tokens":5}}'
+        result = engine.parse_output(raw)
+
+        assert result.text == "done"
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+
+    def test_parse_output_extracts_usage_metadata_format(self) -> None:
+        engine = GeminiEngine()
+        raw = '{"result":"ok","usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}'
+        result = engine.parse_output(raw)
+
+        assert result.text == "ok"
+        assert result.input_tokens == 8
+        assert result.output_tokens == 3
+
+    def test_parse_output_falls_back_to_raw_text(self) -> None:
+        engine = GeminiEngine()
+        result = engine.parse_output("plain text output\nmore text")
+        assert result.text == "plain text output\nmore text"
+
+    def test_parse_output_falls_back_when_empty(self) -> None:
+        engine = GeminiEngine()
+        result = engine.parse_output("")
+        assert result.text == "Task completed"
+
+    def test_run_sync_passes_prompt_via_stdin(self) -> None:
+        engine = GeminiEngine()
+        done = subprocess.CompletedProcess(
+            args=["gemini"],
+            returncode=0,
+            stdout='{"response":"ok"}',
+            stderr="",
+        )
+        with patch("gralph.engines.gemini.subprocess.run", return_value=done) as mock_run:
+            result = engine.run_sync("prompt text")
+
+        assert result.text == "ok"
+        assert mock_run.call_args.kwargs.get("input") == "prompt text"
+
+    def test_run_sync_surfaces_stderr_on_failure(self) -> None:
+        engine = GeminiEngine()
+        failed = subprocess.CompletedProcess(
+            args=["gemini"],
+            returncode=1,
+            stdout="",
+            stderr="API key invalid\nmore details",
+        )
+        with patch("gralph.engines.gemini.subprocess.run", return_value=failed):
+            result = engine.run_sync("prompt")
+
+        assert result.return_code == 1
+        assert result.error == "API key invalid"
+
+    def test_run_async_writes_prompt_to_stdin(self, tmp_path: Path) -> None:
+        engine = GeminiEngine()
+        fake_proc = MagicMock()
+        fake_proc.stdin = MagicMock()
+
+        with patch("gralph.engines.gemini.subprocess.Popen", return_value=fake_proc):
+            proc = engine.run_async(
+                "prompt text",
+                cwd=tmp_path,
+                stdout_file=tmp_path / "out.log",
+                stderr_file=tmp_path / "err.log",
+            )
+
+        assert proc is fake_proc
+        fake_proc.stdin.write.assert_called_once_with("prompt text")
+        fake_proc.stdin.close.assert_called_once()
+
+    def test_check_available_reports_missing_binary(self) -> None:
+        with patch("gralph.engines.gemini.shutil.which", return_value=None):
+            engine = GeminiEngine()
             assert engine.check_available() is not None

@@ -6,6 +6,7 @@ from gralph.engines.base import EngineBase
 from gralph.engines.claude import ClaudeEngine
 from gralph.engines.codex import CodexEngine
 from gralph.engines.cursor import CursorEngine
+from gralph.engines.gemini import GeminiEngine
 from gralph.engines.opencode import OpenCodeEngine
 
 
@@ -20,8 +21,10 @@ def get_engine(name: str, *, opencode_model: str = "") -> EngineBase:
             return CodexEngine()
         case "cursor":
             return CursorEngine()
+        case "gemini":
+            return GeminiEngine()
         case _:
             raise ValueError(f"Unknown engine: {name}")
 
 
-ENGINE_NAMES = ("claude", "opencode", "codex", "cursor")
+ENGINE_NAMES = ("claude", "opencode", "codex", "cursor", "gemini")
