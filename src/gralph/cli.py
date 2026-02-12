@@ -866,6 +866,7 @@ def _run_pipeline(cfg: Config) -> None:
         total_input_tokens=runner.total_input_tokens,
         total_output_tokens=runner.total_output_tokens,
         branches=runner.completed_branches,
+        provider_usage=runner.provider_usage,
     )
     notify_done()
 

@@ -108,6 +108,15 @@ class TestShowSummaryGemini:
         assert "gralph/task-001" in out
         assert "gralph/task-002" in out
 
+    def test_summary_shows_provider_usage(self, capsys):
+        cfg = Config(ai_engine="gemini")
+        show_summary(cfg, 1, provider_usage={"claude": 2, "codex": 1, "gemini": 0})
+        out = capsys.readouterr().out
+        assert "Provider Usage" in out
+        assert "claude: 2 task attempt(s)" in out
+        assert "codex: 1 task attempt(s)" in out
+        assert "gemini: 0" not in out
+
 
 class TestEnginePricingTable:
     """Verify pricing table has expected entries."""

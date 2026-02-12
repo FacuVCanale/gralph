@@ -395,6 +395,27 @@ class TestRunnerFailureFlow:
 
         assert scheduler.state("A") == TaskState.FAILED
 
+    def test_report_includes_provider_and_attempt_history(self, git_repo: Path) -> None:
+        runner, _scheduler = _make_runner(git_repo)
+        slot = _make_successful_slot(runner, git_repo, "A")
+        slot.provider = "codex"
+        runner.task_provider_attempts["A"] = ["claude", "codex"]
+
+        runner._save_report(
+            slot,
+            git_repo,
+            "failed",
+            0,
+            "Rate limit exceeded",
+            attempt=2,
+            retries=1,
+        )
+
+        report_file = git_repo / "artifacts" / "test" / "reports" / "A.json"
+        report = json.loads(read_text(report_file))
+        assert report["provider"] == "codex"
+        assert report["providerAttempts"] == ["claude", "codex"]
+
 
 # ── TestRunnerStalledFlow ────────────────────────────────────────────
 

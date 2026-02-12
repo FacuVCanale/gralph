@@ -272,6 +272,8 @@ class Runner:
         self.sched = scheduler
         self.providers: list[str] = self._normalize_providers(cfg.providers, cfg.ai_engine)
         self.task_providers: dict[str, str] = {}
+        self.task_provider_attempts: dict[str, list[str]] = {}
+        self.provider_usage: dict[str, int] = {provider: 0 for provider in self.providers}
         self._provider_index = 0
         self._engine_factory = self._make_engine_factory(engine)
         self.iteration = 0
@@ -344,6 +346,12 @@ class Runner:
     def _task_engine_for_provider(self, provider: str) -> EngineBase:
         """Build a fresh engine instance for a task launch."""
         return self._engine_factory(provider)
+
+    def _record_provider_attempt(self, task_id: str, provider: str) -> None:
+        """Track provider attempt counts for run summary and task reports."""
+        self.provider_usage[provider] = self.provider_usage.get(provider, 0) + 1
+        attempts = self.task_provider_attempts.setdefault(task_id, [])
+        attempts.append(provider)
 
     def run(self) -> bool:
         """Execute all tasks. Returns ``True`` on success."""
@@ -606,6 +614,7 @@ class Runner:
                 engine=task_engine,
             )
         )
+        self._record_provider_attempt(task_id, provider)
 
     def _reap_finished(self, original_dir: Path) -> None:
         """Check active agents; process any that have finished."""
@@ -850,11 +859,16 @@ class Runner:
         task = self.tf.get_task(slot.task_id)
         title = task.title if task else slot.task_id
         files = changed_files(self.cfg.base_branch, cwd=slot.worktree_dir)
+        provider_attempts = self.task_provider_attempts.get(slot.task_id, [])
+        if not provider_attempts and slot.provider:
+            provider_attempts = [slot.provider]
 
         report = {
             "taskId": slot.task_id,
             "title": title,
             "branch": slot.branch_name,
+            "provider": slot.provider,
+            "providerAttempts": provider_attempts,
             "status": status,
             "commits": commits,
             "changedFiles": ",".join(files),

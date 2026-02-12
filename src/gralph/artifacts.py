@@ -218,6 +218,7 @@ def show_summary(
     total_output_tokens: int = 0,
     total_actual_cost: str = "0",
     branches: list[str] | None = None,
+    provider_usage: dict[str, int] | None = None,
 ) -> None:
     """Print the final run summary."""
     total_input_tokens = _coerce_non_negative_int(total_input_tokens)
@@ -242,6 +243,18 @@ def show_summary(
         else:
             cost = _estimate_cost(cfg.ai_engine, total_input_tokens, total_output_tokens)
             log.console.print(f"Est. cost:     ${cost:.4f}")
+
+    if provider_usage:
+        used = [
+            (provider, _coerce_non_negative_int(count))
+            for provider, count in provider_usage.items()
+            if _coerce_non_negative_int(count) > 0
+        ]
+        if used:
+            log.console.print("")
+            log.console.print("[bold]>>> Provider Usage[/bold]")
+            for provider, count in used:
+                log.console.print(f"  - {provider}: {count} task attempt(s)")
 
     if branches:
         log.console.print("")

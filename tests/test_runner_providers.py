@@ -118,6 +118,13 @@ def test_round_robin_provider_assignment(git_repo: Path) -> None:
         "gemini",
         "claude",
     ]
+    assert runner.provider_usage["claude"] == 2
+    assert runner.provider_usage["codex"] == 1
+    assert runner.provider_usage["gemini"] == 1
+    assert runner.task_provider_attempts["TASK-001"] == ["claude"]
+    assert runner.task_provider_attempts["TASK-002"] == ["codex"]
+    assert runner.task_provider_attempts["TASK-003"] == ["gemini"]
+    assert runner.task_provider_attempts["TASK-004"] == ["claude"]
     _cleanup_slots(runner)
 
 
@@ -228,6 +235,10 @@ def test_external_failure_retry_falls_back_to_next_provider(git_repo: Path) -> N
 
     assert [slot.provider for slot in runner.active] == ["codex"]
     assert [call.args[0] for call in mock_get_engine.call_args_list] == ["claude", "codex"]
+    assert runner.provider_usage["claude"] == 1
+    assert runner.provider_usage["codex"] == 1
+    assert runner.provider_usage["gemini"] == 0
+    assert runner.task_provider_attempts["TASK-001"] == ["claude", "codex"]
     _cleanup_slots(runner)
     if first_slot is not None:
         _cleanup_slot_files(first_slot)
