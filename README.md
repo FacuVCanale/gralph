@@ -82,9 +82,14 @@ gralph --cursor
 gralph --codex
 gralph --gemini
 
+# Run with an explicit provider order
+gralph --providers claude,codex
+gralph --providers codex,gemini,cursor
+
 # Generate a PRD
 gralph prd "Add dark mode toggle"
 gralph --codex prd -o PRD.md "Refactor payment flow"
+gralph --providers gemini,codex prd "Improve test reliability and CI logs"
 
 # Run sequentially
 gralph --sequential
@@ -122,7 +127,12 @@ gralph --stalled-timeout 900 --external-fail-timeout 600
 | `--cursor` | Use Cursor agent |
 | `--codex` | Use Codex CLI (default uses full write access for autonomous runs) |
 | `--gemini` | Use Gemini CLI |
+| `--providers LIST` | Use an ordered, comma-separated provider list (example: `claude,codex`) |
 | `--opencode-model MODEL` | Override OpenCode model (default: `opencode/minimax-m2.1-free`) |
+
+`--providers` is mutually exclusive with engine flags (`--claude`, `--opencode`, `--codex`, `--cursor`, `--gemini`). The first provider in the list becomes the primary engine for the run.
+
+If no engine flag and no `--providers` are set, GRALPH defaults to primary engine `claude` and provider order `claude,opencode,codex,cursor,gemini`.
 
 For Codex, GRALPH defaults to `--dangerously-bypass-approvals-and-sandbox` so agents can edit files reliably in worktrees. Set `GRALPH_CODEX_SAFE=1` (or `GRALPH_CODEX_DANGEROUS=0`) to force sandboxed mode.
 
@@ -189,7 +199,7 @@ gralph prd -o PRD.md "Refactor payment flow"
 | `DESCRIPTION` | Feature description (required, positional) |
 | `-o, --output FILE` | Output file path (default: `tasks/prd-<slug>.md`) |
 
-The subcommand inherits the engine from the parent (`--claude`, `--opencode`, `--codex`, `--cursor`, `--gemini`).
+The subcommand inherits the engine from the parent (`--claude`, `--opencode`, `--codex`, `--cursor`, `--gemini`, or `--providers`). When using `--providers`, the first provider is used for PRD generation.
 
 ## PRD Format
 
