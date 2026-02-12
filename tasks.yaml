@@ -14,7 +14,7 @@ tasks:
 
 - id: TASK-003
   title: "Add stdin prompt passthrough for long prompts and Windows in GeminiEngine"
-  completed: false
+  completed: true
   dependsOn: ["TASK-001"]
   mutex: []
 
