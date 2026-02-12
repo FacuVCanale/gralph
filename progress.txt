@@ -12,3 +12,18 @@ Changes:
 - Updated src/gralph/engines/registry.py — added GeminiEngine to get_engine() and ENGINE_NAMES
 - Updated src/gralph/cli.py — added --gemini CLI flag, banner display, and PRD skill path
 - Updated tests/test_engines.py — added TestGeminiEngine class with 10 tests covering all methods
+
+TASK-003: Add stdin prompt passthrough for long prompts and Windows in GeminiEngine
+
+Status: COMPLETED
+
+Changes:
+- Updated src/gralph/engines/gemini.py:
+  - Added platform import and _STDIN_THRESHOLD constant (8000 chars)
+  - build_cmd() now accepts use_stdin kwarg; when True, appends "-" marker instead of "-p prompt"
+  - run_sync() conditionally uses stdin when prompt > 8000 chars or platform is Windows
+  - run_async() conditionally uses stdin with the same logic; short prompts on non-Windows skip stdin entirely
+- Updated tests/test_engines.py:
+  - Added test_build_cmd_uses_stdin_marker_when_requested
+  - Replaced single stdin test with three: short prompt (no stdin), long prompt (stdin), Windows (stdin)
+  - Added test_run_async_short_prompt_no_stdin for non-stdin async path

@@ -294,6 +294,7 @@ class TestGeminiEngine:
 
         assert cmd[0] == "/usr/bin/gemini"
         assert "-p" in cmd
+        assert "hello" in cmd
         assert "--output-format" in cmd
         assert "json" in cmd
 
@@ -303,6 +304,15 @@ class TestGeminiEngine:
             cmd = engine.build_cmd("hello")
 
         assert cmd[0] == "gemini"
+
+    def test_build_cmd_uses_stdin_marker_when_requested(self) -> None:
+        with patch("gralph.engines.gemini.shutil.which", return_value="/usr/bin/gemini"):
+            engine = GeminiEngine()
+            cmd = engine.build_cmd("hello", use_stdin=True)
+
+        assert "-" in cmd
+        assert "-p" not in cmd
+        assert "hello" not in cmd
 
     def test_parse_output_extracts_response_and_usage(self) -> None:
         engine = GeminiEngine()
@@ -332,7 +342,7 @@ class TestGeminiEngine:
         result = engine.parse_output("")
         assert result.text == "Task completed"
 
-    def test_run_sync_passes_prompt_via_stdin(self) -> None:
+    def test_run_sync_passes_short_prompt_via_cli_arg(self) -> None:
         engine = GeminiEngine()
         done = subprocess.CompletedProcess(
             args=["gemini"],
@@ -340,11 +350,46 @@ class TestGeminiEngine:
             stdout='{"response":"ok"}',
             stderr="",
         )
-        with patch("gralph.engines.gemini.subprocess.run", return_value=done) as mock_run:
-            result = engine.run_sync("prompt text")
+        with (
+            patch("gralph.engines.gemini.subprocess.run", return_value=done) as mock_run,
+            patch("gralph.engines.gemini.platform.system", return_value="Linux"),
+        ):
+            result = engine.run_sync("short prompt")
 
         assert result.text == "ok"
-        assert mock_run.call_args.kwargs.get("input") == "prompt text"
+        assert mock_run.call_args.kwargs.get("input") is None
+
+    def test_run_sync_passes_long_prompt_via_stdin(self) -> None:
+        engine = GeminiEngine()
+        long_prompt = "x" * 9000
+        done = subprocess.CompletedProcess(
+            args=["gemini"],
+            returncode=0,
+            stdout='{"response":"ok"}',
+            stderr="",
+        )
+        with patch("gralph.engines.gemini.subprocess.run", return_value=done) as mock_run:
+            result = engine.run_sync(long_prompt)
+
+        assert result.text == "ok"
+        assert mock_run.call_args.kwargs.get("input") == long_prompt
+
+    def test_run_sync_uses_stdin_on_windows(self) -> None:
+        engine = GeminiEngine()
+        done = subprocess.CompletedProcess(
+            args=["gemini"],
+            returncode=0,
+            stdout='{"response":"ok"}',
+            stderr="",
+        )
+        with (
+            patch("gralph.engines.gemini.subprocess.run", return_value=done) as mock_run,
+            patch("gralph.engines.gemini.platform.system", return_value="Windows"),
+        ):
+            result = engine.run_sync("short prompt")
+
+        assert result.text == "ok"
+        assert mock_run.call_args.kwargs.get("input") == "short prompt"
 
     def test_run_sync_surfaces_stderr_on_failure(self) -> None:
         engine = GeminiEngine()
@@ -360,22 +405,41 @@ class TestGeminiEngine:
         assert result.return_code == 1
         assert result.error == "API key invalid"
 
-    def test_run_async_writes_prompt_to_stdin(self, tmp_path: Path) -> None:
+    def test_run_async_writes_long_prompt_to_stdin(self, tmp_path: Path) -> None:
         engine = GeminiEngine()
+        long_prompt = "x" * 9000
         fake_proc = MagicMock()
         fake_proc.stdin = MagicMock()
 
         with patch("gralph.engines.gemini.subprocess.Popen", return_value=fake_proc):
             proc = engine.run_async(
-                "prompt text",
+                long_prompt,
                 cwd=tmp_path,
                 stdout_file=tmp_path / "out.log",
                 stderr_file=tmp_path / "err.log",
             )
 
         assert proc is fake_proc
-        fake_proc.stdin.write.assert_called_once_with("prompt text")
+        fake_proc.stdin.write.assert_called_once_with(long_prompt)
         fake_proc.stdin.close.assert_called_once()
+
+    def test_run_async_short_prompt_no_stdin(self, tmp_path: Path) -> None:
+        engine = GeminiEngine()
+        fake_proc = MagicMock()
+
+        with (
+            patch("gralph.engines.gemini.subprocess.Popen", return_value=fake_proc),
+            patch("gralph.engines.gemini.platform.system", return_value="Linux"),
+        ):
+            proc = engine.run_async(
+                "short",
+                cwd=tmp_path,
+                stdout_file=tmp_path / "out.log",
+                stderr_file=tmp_path / "err.log",
+            )
+
+        assert proc is fake_proc
+        fake_proc.stdin.write.assert_not_called()
 
     def test_check_available_reports_missing_binary(self) -> None:
         with patch("gralph.engines.gemini.shutil.which", return_value=None):

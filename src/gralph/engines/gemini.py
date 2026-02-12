@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import shutil
 import subprocess
 import time
@@ -11,21 +12,23 @@ from pathlib import Path
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import open_text
 
+# Windows and long prompts: use stdin to avoid command-line length limits (~32KB)
+_STDIN_THRESHOLD = 8000
+
 
 class GeminiEngine(EngineBase):
     name = "gemini"
 
-    def build_cmd(self, prompt: str) -> list[str]:
+    def build_cmd(self, prompt: str, *, use_stdin: bool = False) -> list[str]:
         # Use resolved path so subprocess gets an absolute path; on some platforms
         # (e.g. Windows with pipx) the child process resolves PATH differently.
         gemini = shutil.which("gemini") or "gemini"
-        return [
-            gemini,
-            "-p",
-            prompt,
-            "--output-format",
-            "json",
-        ]
+        cmd = [gemini, "--output-format", "json"]
+        if use_stdin:
+            cmd.append("-")  # Read prompt from stdin
+        else:
+            cmd.extend(["-p", prompt])
+        return cmd
 
     def parse_output(self, raw: str) -> EngineResult:
         result = EngineResult()
@@ -76,14 +79,15 @@ class GeminiEngine(EngineBase):
         log_file: Path | None = None,
         timeout: int | None = None,
     ) -> EngineResult:
-        """Execute Gemini CLI with prompt via stdin to avoid command-line length limits."""
-        cmd = self.build_cmd(prompt)
+        """Execute Gemini CLI, passing long prompts via stdin on Windows."""
+        use_stdin = len(prompt) > _STDIN_THRESHOLD or platform.system() == "Windows"
+        cmd = self.build_cmd(prompt, use_stdin=use_stdin)
         start = time.monotonic()
 
         try:
             proc = subprocess.run(
                 cmd,
-                input=prompt,
+                input=prompt if use_stdin else None,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -130,15 +134,34 @@ class GeminiEngine(EngineBase):
         stdout_file: Path | None = None,
         stderr_file: Path | None = None,
     ) -> subprocess.Popen:  # type: ignore[type-arg]
-        """Launch Gemini CLI asynchronously, passing prompt via stdin."""
-        cmd = self.build_cmd(prompt)
+        """Launch Gemini CLI asynchronously, passing long prompts via stdin on Windows."""
+        use_stdin = len(prompt) > _STDIN_THRESHOLD or platform.system() == "Windows"
+        cmd = self.build_cmd(prompt, use_stdin=use_stdin)
 
         stdout_fh = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
         stderr_fh = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
 
-        proc = subprocess.Popen(
+        if use_stdin:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+            )
+            if proc.stdin:
+                try:
+                    proc.stdin.write(prompt)
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            return proc
+
+        return subprocess.Popen(
             cmd,
-            stdin=subprocess.PIPE,
             stdout=stdout_fh,
             stderr=stderr_fh,
             text=True,
@@ -146,12 +169,6 @@ class GeminiEngine(EngineBase):
             errors="replace",
             cwd=cwd,
         )
-
-        if proc.stdin:
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-
-        return proc
 
     def check_available(self) -> str | None:
         if not shutil.which("gemini"):
