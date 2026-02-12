@@ -641,6 +641,8 @@ def _run_pipeline(cfg: Config) -> None:
         ensure_clean_git_state,
         cleanup_stale_agent_branches,
         ensure_run_branch,
+        has_dirty_worktree,
+        dirty_worktree_entries,
     )
     from gralph.notify import notify_done, notify_error
     from gralph.prd import extract_prd_id, setup_run_dir, find_prd_file, copy_prd_to_run_dir
@@ -734,6 +736,22 @@ def _run_pipeline(cfg: Config) -> None:
     if cfg.branch_per_task and not cfg.base_branch:
         cfg.base_branch = current_branch()
 
+    if has_dirty_worktree():
+        entries = [
+            entry for entry in dirty_worktree_entries()
+            if not entry.startswith("?? ")
+        ]
+        if not entries:
+            entries = []
+    else:
+        entries = []
+
+    if entries:
+        glog.error(
+            "Working tree is dirty on the run branch. Commit/stash changes before running gralph."
+        )
+        glog.console.print(f"[dim]Dirty entries: {', '.join(entries[:8])}[/dim]")
+        sys.exit(1)
     # ── Banner ───────────────────────────────────────────────────
     _show_banner(cfg)
 

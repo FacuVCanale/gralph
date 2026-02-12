@@ -229,7 +229,11 @@ class EngineBase(ABC):
 
             if isinstance(err, str):
                 err_lower = err.lower()
+                if "blocked by policy" in err_lower:
+                    return "Blocked by policy"
                 if "rate_limit" in err_lower or "rate limit" in err_lower or "quota" in err_lower:
+                    return "Rate limit exceeded"
+                if "hit your limit" in err_lower:
                     return "Rate limit exceeded"
                 if err.strip():
                     return err.strip()
@@ -243,12 +247,13 @@ class EngineBase(ABC):
 
                 if msg:
                     msg_lower = msg.lower()
+                    if "blocked by policy" in msg_lower:
+                        return "Blocked by policy"
                     if "rate_limit" in msg_lower or "rate limit" in msg_lower or "quota" in msg_lower:
+                        return "Rate limit exceeded"
+                    if "hit your limit" in msg_lower:
                         return "Rate limit exceeded"
                     return msg
                 return "Unknown error"
 
-        lower_raw = raw.lower()
-        if "you've hit your limit" in lower_raw:
-            return "Rate limit exceeded"
         return ""

@@ -27,6 +27,7 @@ class TestIsExternalFailure:
         assert _is_external_failure("Rate limit exceeded") is True
         assert _is_external_failure("rate limit hit") is True
         assert _is_external_failure("You've hit the rate limit") is True
+        assert _is_external_failure("You've hit your limit · resets 3pm") is True
 
     def test_429_is_external(self):
         assert _is_external_failure("429 Too Many Requests") is True
@@ -53,6 +54,7 @@ class TestIsExternalFailure:
         assert _is_external_failure("command not found") is True
         assert _is_external_failure("ENOENT") is True
         assert _is_external_failure("EACCES") is True
+        assert _is_external_failure("rejected: blocked by policy") is True
 
     def test_install_and_lockfile(self):
         assert _is_external_failure("BunInstallFailedError") is True
@@ -80,9 +82,13 @@ class TestEngineCheckErrors:
         raw = '{"type":"message","text":"ok"}\n{"error":"rate_limit"}'
         assert EngineBase._check_errors(raw) == "Rate limit exceeded"
 
-    def test_you_hit_your_limit(self):
-        raw = "You've hit your limit for this model."
+    def test_you_hit_your_limit_in_structured_error(self):
+        raw = '{"error":"You\'ve hit your limit for this model."}'
         assert EngineBase._check_errors(raw) == "Rate limit exceeded"
+
+    def test_you_hit_your_limit_plain_text_does_not_false_positive(self):
+        raw = "You've hit your limit for this model."
+        assert EngineBase._check_errors(raw) == ""
 
     def test_clean_output_empty(self):
         assert EngineBase._check_errors("") == ""
@@ -91,6 +97,10 @@ class TestEngineCheckErrors:
     def test_type_error_parsing(self):
         raw = '{"type":"error","error":{"message":"Something went wrong"}}'
         assert "Something went wrong" in EngineBase._check_errors(raw)
+
+    def test_blocked_by_policy_detection(self):
+        raw = '{"error":"rejected: blocked by policy"}'
+        assert EngineBase._check_errors(raw) == "Blocked by policy"
 
     def test_does_not_false_positive_on_error_string_inside_text_payload(self):
         raw = (
@@ -133,6 +143,36 @@ class TestExtractErrorFromLog:
         stream = tmp_path / "out.stream"
         write_text(stream, '{"type":"error","error":{"message":"rate_limit hit"}}\n')
         assert _extract_error_from_logs(tmp_path / "missing.log", stream) == "rate_limit hit"
+
+    def test_rate_limit_from_stream_includes_detail_message(self, tmp_path: Path):
+        stream = tmp_path / "out.stream"
+        write_text(
+            stream,
+            "\n".join(
+                [
+                    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"You've hit your limit resets 3pm\"}]},\"error\":\"rate_limit\"}",
+                    "{\"type\":\"result\",\"result\":\"You've hit your limit resets 3pm\",\"is_error\":true}",
+                ]
+            )
+            + "\n",
+        )
+        msg = _extract_error_from_logs(tmp_path / "missing.log", stream)
+        assert msg.startswith("Rate limit exceeded:")
+        assert "resets 3pm" in msg
+
+    def test_stream_blocked_by_policy_has_priority(self, tmp_path: Path):
+        stream = tmp_path / "out.stream"
+        write_text(
+            stream,
+            "\n".join(
+                [
+                    "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"status\":\"failed\",\"aggregated_output\":\"command rejected: blocked by policy\"}}",
+                    "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"You've hit your limit for this model.\"}}",
+                ]
+            )
+            + "\n",
+        )
+        assert _extract_error_from_logs(tmp_path / "missing.log", stream) == "Blocked by policy"
 
 
 # ── Failure type in report (classification consistency) ──────────────────────

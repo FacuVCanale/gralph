@@ -334,6 +334,12 @@ class TestGitUtilities:
         write_text(git_repo / "dirty.txt", "dirty")
         assert git_ops.has_dirty_worktree(cwd=git_repo)
 
+    def test_dirty_worktree_entries(self, git_repo: Path) -> None:
+        assert git_ops.dirty_worktree_entries(cwd=git_repo) == []
+        write_text(git_repo / "dirty.txt", "dirty")
+        entries = git_ops.dirty_worktree_entries(cwd=git_repo)
+        assert any("dirty.txt" in entry for entry in entries)
+
     def test_add_and_commit(self, git_repo: Path) -> None:
         write_text(git_repo / "new.txt", "hello")
         assert git_ops.add_and_commit("add new file", cwd=git_repo)

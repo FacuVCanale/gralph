@@ -184,13 +184,46 @@ class TestCodexEngine:
             engine = CodexEngine()
             cmd = engine.build_cmd("hello")
 
-        assert cmd[:4] == ["/usr/bin/codex", "exec", "--full-auto", "--json"]
+        assert cmd[:3] == [
+            "/usr/bin/codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "exec",
+        ]
+        assert "--json" in cmd
         assert cmd[-1] == "hello"
 
     def test_build_cmd_use_stdin_appends_dash(self) -> None:
         engine = CodexEngine()
         cmd = engine.build_cmd("hello", use_stdin=True)
         assert cmd[-1] == "-"
+
+    def test_build_cmd_uses_safe_mode_when_enabled_via_env(self) -> None:
+        with patch("gralph.engines.codex.shutil.which", return_value="/usr/bin/codex"), patch.dict(
+            "os.environ",
+            {"GRALPH_CODEX_SAFE": "1"},
+            clear=False,
+        ):
+            engine = CodexEngine()
+            cmd = engine.build_cmd("hello")
+
+        assert cmd[:5] == ["/usr/bin/codex", "-a", "on-failure", "-s", "workspace-write"]
+        assert cmd[5] == "exec"
+        assert "--json" in cmd
+        assert cmd[-1] == "hello"
+
+    def test_build_cmd_respects_explicit_dangerous_false_env(self) -> None:
+        with patch("gralph.engines.codex.shutil.which", return_value="/usr/bin/codex"), patch.dict(
+            "os.environ",
+            {"GRALPH_CODEX_DANGEROUS": "0"},
+            clear=False,
+        ):
+            engine = CodexEngine()
+            cmd = engine.build_cmd("hello")
+
+        assert cmd[:5] == ["/usr/bin/codex", "-a", "on-failure", "-s", "workspace-write"]
+        assert cmd[5] == "exec"
+        assert "--json" in cmd
+        assert cmd[-1] == "hello"
 
     def test_run_sync_on_windows_uses_stdin_input(self) -> None:
         engine = CodexEngine()

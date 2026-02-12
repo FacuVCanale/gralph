@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -205,6 +206,9 @@ class TestRunnerMergeFailureFlow:
         assert scheduler.state("A") == TaskState.FAILED
         # MERGE_HEAD should be gone (abort was called)
         assert not (git_repo / ".git" / "MERGE_HEAD").exists()
+        report = json.loads(read_text(git_repo / "artifacts" / "test" / "reports" / "A.json"))
+        assert report["status"] == "failed"
+        assert report["failureType"] == "internal"
 
     def test_merge_failure_does_not_delete_branch(self, git_repo: Path) -> None:
         runner, scheduler = _make_runner(git_repo)
@@ -219,6 +223,20 @@ class TestRunnerMergeFailureFlow:
         # (Runner calls merge_abort but doesn't delete_branch on failure path)
         # Note: worktree cleanup may remove the worktree but the branch ref stays
         assert git_ops.branch_exists(slot.branch_name, cwd=git_repo)
+
+    def test_merge_blocked_by_local_changes_reports_detail(self, git_repo: Path) -> None:
+        runner, scheduler = _make_runner(git_repo)
+        scheduler.start_task("A")
+        slot = _make_successful_slot(runner, git_repo, "A")
+
+        write_text(git_repo / "code.py", "local uncommitted file")
+
+        runner._handle_finished(slot, git_repo)
+
+        assert scheduler.state("A") == TaskState.FAILED
+        report = json.loads(read_text(git_repo / "artifacts" / "test" / "reports" / "A.json"))
+        assert report["status"] == "failed"
+        assert "overwritten by merge" in report["errorMessage"].lower()
 
 
 # ── TestRunnerFailureFlow ────────────────────────────────────────────

@@ -20,8 +20,9 @@ from gralph.git_ops import (
     commit_count,
     create_agent_worktree,
     current_branch,
+    dirty_worktree_entries,
     has_dirty_worktree,
-    merge_no_edit,
+    merge_no_edit_result,
     merge_abort,
     delete_branch,
 )
@@ -80,9 +81,93 @@ def _is_external_failure(msg: str) -> bool:
         "buninstallfailederror", "command not found", "enoent", "eacces",
         "permission denied", "network", "timeout", "tls", "econnreset",
         "etimedout", "lockfile", "install", "certificate", "ssl",
-        "rate limit", "quota", "429", "too many requests", "stalled",
+        "rate limit", "quota", "429", "too many requests", "hit your limit", "stalled",
+        "blocked by policy", "read-only sandbox", "approval_policy",
     ]
     return any(p in lower for p in patterns)
+
+
+def _extract_policy_block_detail_from_stream(stream: str) -> str:
+    """Extract policy/sandbox block details from structured engine stream."""
+    if not stream:
+        return ""
+
+    import json
+
+    for line in stream.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if "blocked by policy" in stripped.lower():
+            return "Blocked by policy"
+
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        err = obj.get("error")
+        if isinstance(err, str) and "blocked by policy" in err.lower():
+            return "Blocked by policy"
+        if isinstance(err, dict):
+            msg = str(err.get("message", "")).strip()
+            if "blocked by policy" in msg.lower():
+                return "Blocked by policy"
+
+        item = obj.get("item")
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type", "")).lower() != "command_execution":
+            continue
+        output = str(item.get("aggregated_output", "")).strip()
+        if "blocked by policy" in output.lower():
+            return "Blocked by policy"
+
+    return ""
+
+
+def _extract_rate_limit_detail_from_stream(stream: str) -> str:
+    """Extract human-readable rate-limit text from structured engine stream."""
+    if not stream:
+        return ""
+
+    import json
+
+    for line in stream.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        # Common path in Claude stream-json: assistant message carries detail text.
+        message = obj.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text")
+                    if isinstance(text, str) and "hit your limit" in text.lower():
+                        return text.strip()
+
+        # Result events may also carry a plain string with reset info.
+        result_text = obj.get("result")
+        if isinstance(result_text, str) and "hit your limit" in result_text.lower():
+            return result_text.strip()
+
+    return ""
 
 
 def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) -> str:
@@ -97,11 +182,21 @@ def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) ->
 
     if stream_file and stream_file.is_file():
         stream = read_text(stream_file, errors="replace")
+        policy_detail = _extract_policy_block_detail_from_stream(stream)
+        if policy_detail:
+            return policy_detail
+        rate_limit_detail = _extract_rate_limit_detail_from_stream(stream)
         err = EngineBase._check_errors(stream)
         if err:
+            if err.lower() == "rate limit exceeded" and rate_limit_detail:
+                return f"Rate limit exceeded: {rate_limit_detail}"
             return err
+        if rate_limit_detail:
+            return rate_limit_detail
         for line in reversed(stream.splitlines()):
             lower = line.lower()
+            if "blocked by policy" in lower:
+                return "Blocked by policy"
             if "error" in lower or "exception" in lower or "traceback" in lower:
                 return line.strip()
 
@@ -354,7 +449,7 @@ class Runner:
         touches = ", ".join(task.touches) if task else ""
 
         log.console.print(
-            f"  [cyan]●[/cyan] Agent {self.agent_num}: "
+            f"  [cyan]*[/cyan] Agent {self.agent_num}: "
             f"{title[:40]} ({task_id})"
         )
 
@@ -490,15 +585,32 @@ class Runner:
 
         # Merge or create PR
         merge_ok = True
+        merge_error = ""
         if not self.cfg.create_pr:
             log.info(f"Merging {slot.branch_name} into {self.cfg.base_branch}…")
-            if merge_no_edit(slot.branch_name, cwd=original_dir):
+            merge_result = merge_no_edit_result(slot.branch_name, cwd=original_dir)
+            if merge_result.returncode == 0:
                 delete_branch(slot.branch_name, cwd=original_dir)
                 self.completed_branches.append(slot.branch_name)
             else:
                 merge_ok = False
                 merge_abort(cwd=original_dir)
-                log.error(f"Merge failed for {slot.branch_name}")
+                merged_output = (merge_result.stderr or merge_result.stdout or "").strip()
+                if merged_output:
+                    merged_output = " ".join(merged_output.split())
+
+                # If no message is surfaced, report dirty entries to help diagnose
+                # local-uncommitted-change failures.
+                if not merged_output:
+                    dirty_entries = dirty_worktree_entries(cwd=original_dir)
+                    if dirty_entries:
+                        merged_output = (
+                            "Run branch has local uncommitted changes that block merge: "
+                            + ", ".join(dirty_entries[:8])
+                        )
+
+                merge_error = merged_output or "git merge failed"
+                log.error(f"Merge failed for {slot.branch_name}: {merge_error}")
         else:
             from gralph.git_ops import create_pull_request
 
@@ -518,12 +630,12 @@ class Runner:
                 mark_task_complete_in_file(prd_path, slot.task_id)
             self.completed_task_ids.append(slot.task_id)
             log.console.print(
-                f"  [green]✓[/green] {title[:45]} ({slot.task_id})"
+                f"  [green]OK[/green] {title[:45]} ({slot.task_id})"
             )
         else:
             self.sched.fail_task(slot.task_id)
             log.console.print(
-                f"  [red]✗[/red] {title[:45]} ({slot.task_id}) [Merge Failed]"
+                f"  [red]X[/red] {title[:45]} ({slot.task_id}) [Merge Failed]"
             )
 
         # Save report
@@ -531,8 +643,9 @@ class Runner:
         self._save_report(
             slot,
             original_dir,
-            "done",
+            "done" if merge_ok else "failed",
             commits,
+            merge_error,
             attempt=retries_used + 1,
             retries=retries_used,
         )
@@ -681,6 +794,9 @@ class Runner:
         if self.cfg.max_retries <= 0:
             return False
         if retries_used >= self.cfg.max_retries:
+            return False
+        lower = err_msg.lower()
+        if "blocked by policy" in lower or "read-only sandbox" in lower:
             return False
         return _is_external_failure(err_msg)
 

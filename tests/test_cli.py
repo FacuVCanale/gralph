@@ -377,6 +377,62 @@ class TestCliFullPipelineRun:
         progress_files = list((tmp_path / "artifacts").rglob("progress.txt"))
         assert len(progress_files) >= 1
 
+    def test_resume_run_fails_fast_when_run_branch_is_dirty(self, cli_runner, tmp_path: Path):
+        write_text(tmp_path / "PRD.md", "# Test\nprd-id: dirty-run\n")
+        run_dir = tmp_path / "artifacts" / "prd" / "dirty-run"
+        run_dir.mkdir(parents=True)
+        write_text(
+            run_dir / "tasks.yaml",
+            "branchName: gralph/dirty-run\ntasks:\n"
+            "  - id: TASK-001\n    title: One\n    completed: false\n    dependsOn: []\n    mutex: []\n",
+        )
+
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+        write_text(tmp_path / "dummy", "x")
+        subprocess.run(["git", "add", "dummy"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_EMAIL": "t@t.com",
+                "GIT_AUTHOR_NAME": "T",
+                "GIT_COMMITTER_EMAIL": "t@t.com",
+                "GIT_COMMITTER_NAME": "T",
+            },
+        )
+        subprocess.run(
+            ["git", "branch", "gralph/dirty-run"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        write_text(tmp_path / "dummy", "changed")
+
+        mock_engine = MagicMock()
+        mock_engine.check_available.return_value = None
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("gralph.engines.registry.get_engine", return_value=mock_engine):
+                with patch("gralph.skills.ensure_skills", return_value=None):
+                    with patch("gralph.runner.Runner") as mock_runner:
+                        r = cli_runner.invoke(
+                            main,
+                            ["--resume", "dirty-run"],
+                            obj={},
+                            catch_exceptions=False,
+                        )
+        finally:
+            os.chdir(old_cwd)
+
+        assert r.exit_code != 0
+        assert "Working tree is dirty on the run branch" in r.output
+        mock_runner.assert_not_called()
+
 
 # ── Config attributes used by pipeline ───────────────────────────────────
 # Ensures Config has all attributes the pipeline expects (e.g. artifacts_dir, not run_dir).

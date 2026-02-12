@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -14,6 +15,20 @@ from gralph.io_utils import open_text
 
 # Windows and long prompts: use stdin to avoid command-line length limits (~32KB)
 _STDIN_THRESHOLD = 8000
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value in _TRUE_VALUES:
+        return True
+    if value in _FALSE_VALUES:
+        return False
+    return None
 
 
 class CodexEngine(EngineBase):
@@ -23,7 +38,31 @@ class CodexEngine(EngineBase):
         # Use resolved path so subprocess gets an absolute path; on some platforms
         # (e.g. Windows with pipx) the child process resolves PATH differently.
         codex = shutil.which("codex") or "codex"
-        cmd = [codex, "exec", "--full-auto", "--json"]
+        safe_mode = _env_bool("GRALPH_CODEX_SAFE")
+        dangerous_mode = _env_bool("GRALPH_CODEX_DANGEROUS")
+        use_dangerous = True
+        if safe_mode is True:
+            use_dangerous = False
+        if dangerous_mode is not None:
+            use_dangerous = dangerous_mode
+
+        if use_dangerous:
+            cmd = [
+                codex,
+                "--dangerously-bypass-approvals-and-sandbox",
+                "exec",
+                "--json",
+            ]
+        else:
+            cmd = [
+                codex,
+                "-a",
+                "on-failure",
+                "-s",
+                "workspace-write",
+                "exec",
+                "--json",
+            ]
         if use_stdin:
             cmd.append("-")  # Read prompt from stdin
         else:
