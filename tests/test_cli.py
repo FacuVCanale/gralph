@@ -14,7 +14,7 @@ import pytest
 
 # Import the CLI main so we can invoke it with Click's CliRunner
 from gralph.cli import main
-from gralph.config import Config
+from gralph.config import Config, DEFAULT_PROVIDERS
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import read_text, write_text
 
@@ -163,6 +163,82 @@ class TestCliOptionFlags:
     def test_update_help(self, cli_runner):
         r = cli_runner.invoke(main, ["--update", "--help"])
         assert r.exit_code == 0
+
+
+class TestCliProvidersOption:
+    """Provider-list CLI behavior: parsing, validation, and conflicts."""
+
+    def test_providers_help(self, cli_runner):
+        r = cli_runner.invoke(main, ["--providers", "claude,codex", "--help"])
+        assert r.exit_code == 0
+
+    def test_providers_sets_config_and_primary_engine(self, cli_runner):
+        with patch("gralph.cli._run_pipeline") as mock_run_pipeline:
+            r = cli_runner.invoke(
+                main,
+                ["--providers", "  CoDeX, gemini  "],
+                obj={},
+                catch_exceptions=False,
+            )
+
+        assert r.exit_code == 0, r.output
+        mock_run_pipeline.assert_called_once()
+        cfg = mock_run_pipeline.call_args.args[0]
+        assert isinstance(cfg, Config)
+        assert cfg.providers == ["codex", "gemini"]
+        assert cfg.ai_engine == "codex"
+
+    def test_engine_flag_sets_single_provider_list(self, cli_runner):
+        with patch("gralph.cli._run_pipeline") as mock_run_pipeline:
+            r = cli_runner.invoke(
+                main,
+                ["--gemini"],
+                obj={},
+                catch_exceptions=False,
+            )
+
+        assert r.exit_code == 0, r.output
+        mock_run_pipeline.assert_called_once()
+        cfg = mock_run_pipeline.call_args.args[0]
+        assert isinstance(cfg, Config)
+        assert cfg.providers == ["gemini"]
+        assert cfg.ai_engine == "gemini"
+
+    def test_default_engine_uses_all_default_providers(self, cli_runner):
+        with patch("gralph.cli._run_pipeline") as mock_run_pipeline:
+            r = cli_runner.invoke(main, [], obj={}, catch_exceptions=False)
+
+        assert r.exit_code == 0, r.output
+        mock_run_pipeline.assert_called_once()
+        cfg = mock_run_pipeline.call_args.args[0]
+        assert isinstance(cfg, Config)
+        assert cfg.providers == list(DEFAULT_PROVIDERS)
+        assert cfg.ai_engine == "claude"
+
+    def test_providers_reject_unknown_provider(self, cli_runner):
+        r = cli_runner.invoke(main, ["--providers", "claude,unknown-provider"])
+        assert r.exit_code != 0
+        assert "Unknown provider(s): unknown-provider" in r.output
+
+    def test_providers_reject_duplicate_provider(self, cli_runner):
+        r = cli_runner.invoke(main, ["--providers", "claude,codex,claude"])
+        assert r.exit_code != 0
+        assert "Duplicate provider(s): claude" in r.output
+
+    def test_providers_reject_empty_entries(self, cli_runner):
+        r = cli_runner.invoke(main, ["--providers", "claude,,codex"])
+        assert r.exit_code != 0
+        assert "cannot contain empty values" in r.output.lower()
+
+    def test_providers_conflicts_with_engine_flag(self, cli_runner):
+        r = cli_runner.invoke(main, ["--codex", "--providers", "claude,gemini"])
+        assert r.exit_code != 0
+        assert "Cannot combine --providers with an engine flag" in r.output
+
+    def test_multiple_engine_flags_conflict(self, cli_runner):
+        r = cli_runner.invoke(main, ["--codex", "--gemini"])
+        assert r.exit_code != 0
+        assert "Conflicting engine flags selected" in r.output
 
 
 # ── --dry-run (full pipeline until dry-run output) ────────────────────────

@@ -13,7 +13,7 @@ from pathlib import Path
 import click
 
 from gralph import __version__
-from gralph.config import Config
+from gralph.config import Config, DEFAULT_PROVIDERS
 from gralph.io_utils import read_text, write_text
 
 
@@ -43,17 +43,93 @@ class GralphGroup(click.Group):
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
 
+def _dedupe_keep_order(values: tuple[str, ...] | list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _parse_providers_option(raw: str) -> list[str]:
+    if not raw:
+        return []
+
+    providers = [item.strip().lower() for item in raw.split(",")]
+    if any(not item for item in providers):
+        raise click.BadParameter(
+            "Provider list cannot contain empty values (example: --providers claude,codex).",
+            param_hint="--providers",
+        )
+
+    unknown = [item for item in providers if item not in DEFAULT_PROVIDERS]
+    if unknown:
+        allowed = ", ".join(DEFAULT_PROVIDERS)
+        invalid = ", ".join(_dedupe_keep_order(unknown))
+        raise click.BadParameter(
+            f"Unknown provider(s): {invalid}. Valid providers: {allowed}.",
+            param_hint="--providers",
+        )
+
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    for item in providers:
+        if item in seen and item not in duplicates:
+            duplicates.append(item)
+        seen.add(item)
+    if duplicates:
+        raise click.BadParameter(
+            f"Duplicate provider(s): {', '.join(duplicates)}.",
+            param_hint="--providers",
+        )
+
+    return providers
+
+
+def _resolve_cli_engine_and_providers(
+    engine_flags: tuple[str, ...],
+    providers_raw: str,
+) -> tuple[str, list[str]]:
+    selected_engines = _dedupe_keep_order(engine_flags)
+
+    if len(selected_engines) > 1:
+        raise click.UsageError(
+            "Conflicting engine flags selected. Use only one of "
+            "--claude/--opencode/--codex/--cursor/--gemini, or use --providers."
+        )
+
+    providers = _parse_providers_option(providers_raw)
+
+    if providers and selected_engines:
+        raise click.UsageError(
+            "Cannot combine --providers with an engine flag. Choose one approach."
+        )
+
+    if providers:
+        return providers[0], providers
+
+    if selected_engines:
+        engine = selected_engines[0]
+        return engine, [engine]
+
+    return "claude", list(DEFAULT_PROVIDERS)
+
+
 @click.group(
     cls=GralphGroup,
     invoke_without_command=True,
     context_settings=CONTEXT_SETTINGS,
 )
-@click.option("--claude", "engine", flag_value="claude", help="Use Claude Code (default)")
-@click.option("--opencode", "engine", flag_value="opencode", help="Use OpenCode")
-@click.option("--codex", "engine", flag_value="codex", help="Use Codex CLI")
-@click.option("--cursor", "engine", flag_value="cursor", help="Use Cursor agent")
-@click.option("--gemini", "engine", flag_value="gemini", help="Use Gemini CLI")
-@click.option("--agent", "engine", flag_value="cursor", hidden=True)
+@click.option("--claude", "engine_flags", flag_value="claude", multiple=True, help="Use Claude Code (default)")
+@click.option("--opencode", "engine_flags", flag_value="opencode", multiple=True, help="Use OpenCode")
+@click.option("--codex", "engine_flags", flag_value="codex", multiple=True, help="Use Codex CLI")
+@click.option("--cursor", "engine_flags", flag_value="cursor", multiple=True, help="Use Cursor agent")
+@click.option("--gemini", "engine_flags", flag_value="gemini", multiple=True, help="Use Gemini CLI")
+@click.option("--agent", "engine_flags", flag_value="cursor", multiple=True, hidden=True)
+@click.option("--providers", default="", help="Comma-separated providers (e.g. claude,codex)")
 @click.option("--opencode-model", default="", help="OpenCode model override")
 @click.option("--no-tests", is_flag=True, help="Skip tests")
 @click.option("--no-lint", is_flag=True, help="Skip linting")
@@ -81,7 +157,8 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.pass_context
 def main(
     ctx: click.Context,
-    engine: str | None,
+    engine_flags: tuple[str, ...],
+    providers: str,
     opencode_model: str,
     no_tests: bool,
     no_lint: bool,
@@ -140,8 +217,11 @@ def main(
         ctx.exit(0)
 
     # ── Build config ─────────────────────────────────────────────
+    engine_name, provider_list = _resolve_cli_engine_and_providers(engine_flags, providers)
+
     cfg = Config(
-        ai_engine=engine or "claude",
+        ai_engine=engine_name,
+        providers=provider_list,
         opencode_model=opencode_model,
         skip_tests=no_tests or fast,
         skip_lint=no_lint or fast,
@@ -204,7 +284,9 @@ def prd(ctx: click.Context, description: str, output: str, no_questions: bool) -
 
     # Inherit engine from parent context
     parent_params = ctx.parent.params if ctx.parent else {}
-    engine_name = parent_params.get("engine") or "claude"
+    parent_engine_flags = tuple(parent_params.get("engine_flags", ()))
+    parent_providers = parent_params.get("providers", "")
+    engine_name, _ = _resolve_cli_engine_and_providers(parent_engine_flags, parent_providers)
     verbose = parent_params.get("verbose", False)
     skills_url = parent_params.get("skills_url", "")
 
