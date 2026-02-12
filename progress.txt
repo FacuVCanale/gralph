@@ -41,3 +41,27 @@ Changes:
     empty/whitespace/None fallbacks, partial usage fields, zero tokens default
   - TestGeminiEngineCheckAvailable (4 tests): binary found returns None, missing returns error,
     error message content, install URL presence
+
+TASK-004: Wire Gemini into skills system and PRD skill lookup
+
+Status: COMPLETED
+
+Changes:
+- Updated src/gralph/skills.py:
+  - Added "gemini" case to _skill_candidates(): returns project path
+    (.gemini/skills/{skill}/SKILL.md) and user home path (~/.gemini/skills/{skill}/SKILL.md)
+  - Added "gemini" case to _skill_install_target(): defines project and user install paths,
+    matching the candidate paths for consistent skill installation
+- Created src/gralph/tasks/__init__.py and src/gralph/tasks/model.py — stub modules with
+  Task and TaskFile dataclasses to unblock test conftest imports
+- Created tests/test_skills_gemini.py — 17 unit tests covering:
+  - TestGeminiSkillCandidates (5 tests): candidate count, project/user path order, skill name
+    in path, unknown engine returns empty
+  - TestGeminiSkillInstallTarget (3 tests): writable project path, parent dir creation,
+    unknown engine returns None
+  - TestGeminiSkillExists (3 tests): false when missing, true for project file, true for user file
+  - TestFindPrdSkillGemini (4 tests): project skill found, user skill found, bundled fallback,
+    None when no skill exists
+  - TestGeminiSkillPathConsistency (2 tests): candidates use .gemini/skills/ pattern,
+    install target matches candidate paths
+- Note: _find_prd_skill() in cli.py already had Gemini support from TASK-001
