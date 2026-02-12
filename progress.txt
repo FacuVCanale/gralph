@@ -27,3 +27,17 @@ Changes:
   - Added test_build_cmd_uses_stdin_marker_when_requested
   - Replaced single stdin test with three: short prompt (no stdin), long prompt (stdin), Windows (stdin)
   - Added test_run_async_short_prompt_no_stdin for non-stdin async path
+
+TASK-006: Add unit tests for GeminiEngine (build_cmd, parse_output, check_available)
+
+Status: COMPLETED
+
+Changes:
+- Created tests/test_gemini_engine.py — dedicated unit test file with 31 tests:
+  - TestGeminiEngineBuildCmd (9 tests): resolved path, fallback name, output format flag,
+    prompt with -p flag, stdin marker, full command structure (both modes), special chars, empty prompt
+  - TestGeminiEngineParseOutput (18 tests): response/result/text field extraction, field priority,
+    usage and usageMetadata token extraction, multi-line parsing, invalid JSON handling,
+    empty/whitespace/None fallbacks, partial usage fields, zero tokens default
+  - TestGeminiEngineCheckAvailable (4 tests): binary found returns None, missing returns error,
+    error message content, install URL presence
