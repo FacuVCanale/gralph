@@ -77,6 +77,13 @@ class OpenCodeEngine(EngineBase):
         if error and not result.error:
             result.error = error
 
+        if proc.returncode != 0 and not result.error:
+            stderr = (proc.stderr or "").strip()
+            if stderr:
+                result.error = stderr.splitlines()[0]
+            else:
+                result.error = f"exit code {proc.returncode}"
+
         return result
 
     def run_async(

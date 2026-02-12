@@ -87,6 +87,14 @@ class TestSchedulerState:
         assert sched.count_failed() == 1
         assert sched.count_running() == 0
 
+    def test_retry_task_returns_to_pending(self):
+        """retry_task transitions RUNNING back to PENDING."""
+        sched = Scheduler(_tf([_t("A")]))
+        sched.start_task("A")
+        sched.retry_task("A")
+        assert sched.state("A") == TaskState.PENDING
+        assert "A" in sched.get_ready()
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  Dependency Ordering

@@ -8,7 +8,7 @@ import pytest
 
 from gralph.engines.base import EngineBase
 from gralph.io_utils import write_text
-from gralph.runner import _extract_error_from_log, _is_external_failure
+from gralph.runner import _extract_error_from_logs, _is_external_failure
 from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
 
@@ -97,30 +97,35 @@ class TestEngineCheckErrors:
 
 
 class TestExtractErrorFromLog:
-    """_extract_error_from_log must return last non-debug line."""
+    """_extract_error_from_logs must return last non-debug line."""
 
     def test_missing_file_returns_empty(self, tmp_path: Path):
-        assert _extract_error_from_log(tmp_path / "nonexistent.log") == ""
+        assert _extract_error_from_logs(tmp_path / "nonexistent.log") == ""
 
     def test_empty_file_returns_empty(self, tmp_path: Path):
         log = tmp_path / "out.log"
         write_text(log, "")
-        assert _extract_error_from_log(log) == ""
+        assert _extract_error_from_logs(log) == ""
 
     def test_only_debug_lines_returns_last_line(self, tmp_path: Path):
         log = tmp_path / "out.log"
         write_text(log, "[DEBUG] a\n[DEBUG] b\n[DEBUG] c\n")
-        assert _extract_error_from_log(log) == "[DEBUG] c"
+        assert _extract_error_from_logs(log) == "[DEBUG] c"
 
     def test_last_non_debug_line_returned(self, tmp_path: Path):
         log = tmp_path / "out.log"
         write_text(log, "[DEBUG] x\nError: rate limit exceeded\n[DEBUG] y\n")
-        assert _extract_error_from_log(log) == "Error: rate limit exceeded"
+        assert _extract_error_from_logs(log) == "Error: rate limit exceeded"
 
     def test_single_error_line(self, tmp_path: Path):
         log = tmp_path / "out.log"
         write_text(log, "Permission denied\n")
-        assert _extract_error_from_log(log) == "Permission denied"
+        assert _extract_error_from_logs(log) == "Permission denied"
+
+    def test_fallback_to_stream_file(self, tmp_path: Path):
+        stream = tmp_path / "out.stream"
+        write_text(stream, '{"type":"error","error":{"message":"rate_limit hit"}}\n')
+        assert _extract_error_from_logs(tmp_path / "missing.log", stream) == "rate_limit hit"
 
 
 # ── Failure type in report (classification consistency) ──────────────────────
