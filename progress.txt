@@ -81,3 +81,26 @@ Changes:
   - TestGeminiSkillPathConsistency (2 tests): candidates use .gemini/skills/ pattern,
     install target matches candidate paths
 - Note: _find_prd_skill() in cli.py already had Gemini support from TASK-001
+
+TASK-005: Add Gemini to run summary banner and cost display in artifacts
+
+Status: COMPLETED
+
+Changes:
+- Updated src/gralph/artifacts.py:
+  - Added _ENGINE_PRICING dict with per-token pricing for claude, codex, and gemini engines
+  - Added _estimate_cost() helper that looks up engine-specific pricing (falls back to Claude rates)
+  - Updated show_summary() to use _estimate_cost() instead of hardcoded Claude pricing
+  - Gemini now displays correct estimated costs using Gemini 2.5 Flash pricing
+- Updated src/gralph/runner.py:
+  - Added total_input_tokens and total_output_tokens accumulators to Runner class
+  - Added _accumulate_tokens() method that parses engine output from stream files after each task
+  - Token counts are accumulated across all completed tasks during the run
+- Updated src/gralph/cli.py:
+  - show_summary() call now passes runner.total_input_tokens and runner.total_output_tokens
+- Created tests/test_artifacts_summary.py — 19 unit tests covering:
+  - TestEstimateCost (8 tests): per-engine pricing, gemini cheaper than claude, zero/partial tokens,
+    unknown engine fallback
+  - TestShowSummaryGemini (7 tests): token counts display, estimated cost with gemini pricing,
+    no cursor message for gemini, branches display, task count
+  - TestEnginePricingTable (4 tests): engine entries exist, all prices positive

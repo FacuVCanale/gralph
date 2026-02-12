@@ -582,7 +582,13 @@ def _run_pipeline(cfg: Config) -> None:
         notify_error("GRALPH stopped due to external failure or deadlock")
         sys.exit(1)
 
-    show_summary(cfg, runner.iteration, branches=runner.completed_branches)
+    show_summary(
+        cfg,
+        runner.iteration,
+        total_input_tokens=runner.total_input_tokens,
+        total_output_tokens=runner.total_output_tokens,
+        branches=runner.completed_branches,
+    )
     notify_done()
 
 

@@ -185,6 +185,22 @@ def generate_fix_tasks(cfg: Config, tf: TaskFile) -> None:
     log.success("Added fix tasks")
 
 
+# ── Cost estimation ───────────────────────────────────────────────────
+
+# Per-token pricing (USD) by engine.  Values are rough estimates.
+_ENGINE_PRICING: dict[str, tuple[float, float]] = {
+    "claude":  (0.000003, 0.000015),   # Claude Sonnet ballpark
+    "codex":   (0.000003, 0.000015),   # Codex CLI (OpenAI pricing approx.)
+    "gemini":  (0.0000001, 0.0000004), # Gemini 2.5 Flash pricing
+}
+
+
+def _estimate_cost(engine: str, input_tokens: int, output_tokens: int) -> float:
+    """Return a rough USD cost estimate for the given engine and token counts."""
+    inp_price, out_price = _ENGINE_PRICING.get(engine, (0.000003, 0.000015))
+    return (input_tokens * inp_price) + (output_tokens * out_price)
+
+
 # ── Summary ──────────────────────────────────────────────────────────
 
 def show_summary(
@@ -213,8 +229,7 @@ def show_summary(
         if cfg.ai_engine == "opencode" and total_actual_cost != "0":
             log.console.print(f"Actual cost:   ${total_actual_cost}")
         else:
-            # Simple estimate (Claude pricing approximation)
-            cost = (total_input_tokens * 0.000003) + (total_output_tokens * 0.000015)
+            cost = _estimate_cost(cfg.ai_engine, total_input_tokens, total_output_tokens)
             log.console.print(f"Est. cost:     ${cost:.4f}")
 
     if branches:

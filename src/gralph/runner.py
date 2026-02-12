@@ -136,6 +136,8 @@ class Runner:
         self.completed_task_ids: list[str] = []
         self.retry_counts: dict[str, int] = {}
         self.retry_after: dict[str, float] = {}
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
 
     def run(self) -> bool:
         """Execute all tasks. Returns ``True`` on success."""
@@ -307,6 +309,9 @@ class Runner:
         """Process a finished agent slot."""
         task = self.tf.get_task(slot.task_id)
         title = task.title if task else slot.task_id
+
+        # Accumulate token usage from engine output
+        self._accumulate_tokens(slot.stream_file)
 
         # Persist log
         self._persist_log(slot.task_id, slot.log_file, slot.stream_file, original_dir)
@@ -549,3 +554,14 @@ class Runner:
         if retries_used >= self.cfg.max_retries:
             return False
         return _is_external_failure(err_msg)
+
+    def _accumulate_tokens(self, stream_file: Path) -> None:
+        """Parse engine output from *stream_file* and accumulate token counts."""
+        if not stream_file.is_file():
+            return
+        raw = read_text(stream_file, errors="replace")
+        if not raw:
+            return
+        result = self.engine.parse_output(raw)
+        self.total_input_tokens += result.input_tokens
+        self.total_output_tokens += result.output_tokens
