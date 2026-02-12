@@ -8,7 +8,7 @@ tasks:
 
 - id: TASK-002
   title: "Register gemini engine in registry and add --gemini CLI flag"
-  completed: false
+  completed: true
   dependsOn: ["TASK-001"]
   mutex: ["global-config", "router"]
 
@@ -20,7 +20,7 @@ tasks:
 
 - id: TASK-004
   title: "Wire Gemini into skills system and PRD skill lookup"
-  completed: false
+  completed: true
   dependsOn: ["TASK-001"]
   mutex: ["global-config"]
 
