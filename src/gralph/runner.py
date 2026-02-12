@@ -115,6 +115,45 @@ def _meaningful_changes(base: str, cwd: Path) -> bool:
     return False
 
 
+_FORBIDDEN_TASK_FILES = {"tasks.yaml", "progress.txt"}
+
+
+def _sanitize_forbidden_task_files(base: str, cwd: Path) -> list[str]:
+    """Revert forbidden runtime files in a task branch before merge.
+
+    Agents sometimes commit local runtime bookkeeping files (``tasks.yaml``,
+    ``progress.txt``). These must not be merged into the run branch.
+    Returns the list of sanitized paths.
+    """
+    changed = changed_files(base, cwd=cwd)
+    offenders = [f for f in changed if Path(f).as_posix() in _FORBIDDEN_TASK_FILES]
+    if not offenders:
+        return []
+
+    for rel in offenders:
+        abs_path = cwd / rel
+        # If the file exists on base, restore that exact version.
+        show = subprocess.run(
+            ["git", "show", f"{base}:{rel}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if show.returncode == 0:
+            subprocess.run(["git", "checkout", base, "--", rel], cwd=cwd, capture_output=True)
+            continue
+
+        # Otherwise it was introduced by the task branch; remove it.
+        if abs_path.exists():
+            abs_path.unlink(missing_ok=True)
+        subprocess.run(["git", "rm", "-f", "--ignore-unmatch", rel], cwd=cwd, capture_output=True)
+
+    if has_dirty_worktree(cwd=cwd):
+        add_and_commit("chore(gralph): sanitize forbidden task files", cwd=cwd)
+
+    return offenders
+
+
 class Runner:
     """Orchestrates DAG-aware parallel/sequential task execution."""
 
@@ -347,17 +386,9 @@ class Runner:
         if has_dirty_worktree(cwd=slot.worktree_dir):
             add_and_commit("Auto-commit remaining changes", cwd=slot.worktree_dir)
 
-        # Revert tasks.yaml if modified
-        tasks_yaml = slot.worktree_dir / "tasks.yaml"
-        if tasks_yaml.is_file():
-            subprocess.run(
-                ["git", "reset", "HEAD", "tasks.yaml"],
-                cwd=slot.worktree_dir, capture_output=True,
-            )
-            subprocess.run(
-                ["git", "checkout", "--", "tasks.yaml"],
-                cwd=slot.worktree_dir, capture_output=True,
-            )
+        sanitized = _sanitize_forbidden_task_files(self.cfg.base_branch, slot.worktree_dir)
+        if sanitized:
+            log.warn(f"Sanitized forbidden files from task branch: {', '.join(sanitized)}")
 
         # Merge or create PR
         merge_ok = True

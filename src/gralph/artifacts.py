@@ -201,6 +201,14 @@ def _estimate_cost(engine: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * inp_price) + (output_tokens * out_price)
 
 
+def _coerce_non_negative_int(value: object) -> int:
+    """Best-effort conversion for token counters coming from external objects/mocks."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 # ── Summary ──────────────────────────────────────────────────────────
 
 def show_summary(
@@ -212,6 +220,9 @@ def show_summary(
     branches: list[str] | None = None,
 ) -> None:
     """Print the final run summary."""
+    total_input_tokens = _coerce_non_negative_int(total_input_tokens)
+    total_output_tokens = _coerce_non_negative_int(total_output_tokens)
+
     log.console.print("")
     log.console.print("[bold]============================================[/bold]")
     log.console.print(f"[green]PRD complete![/green] Finished {iteration} task(s).")
