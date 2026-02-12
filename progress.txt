@@ -13,6 +13,22 @@ Changes:
 - Updated src/gralph/cli.py — added --gemini CLI flag, banner display, and PRD skill path
 - Updated tests/test_engines.py — added TestGeminiEngine class with 10 tests covering all methods
 
+TASK-002: Register gemini engine in registry and add --gemini CLI flag
+
+Status: COMPLETED
+
+Changes:
+- src/gralph/engines/registry.py:
+  - Import GeminiEngine (line 9)
+  - Added case "gemini": return GeminiEngine() in get_engine() match (lines 24-25)
+  - Added "gemini" to ENGINE_NAMES tuple (line 30)
+- src/gralph/cli.py:
+  - Added @click.option("--gemini", "engine", flag_value="gemini", help="Use Gemini CLI") (line 54)
+- tests/test_engines.py:
+  - Added ("gemini", GeminiEngine) to TestEngineRegistry parametrize (line 28)
+- Verified: get_engine("gemini") returns GeminiEngine instance
+- Verified: all 31 gemini engine tests pass
+
 TASK-003: Add stdin prompt passthrough for long prompts and Windows in GeminiEngine
 
 Status: COMPLETED
