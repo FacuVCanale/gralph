@@ -290,3 +290,137 @@ def test_external_failure_retry_keeps_provider_when_only_one(git_repo: Path) -> 
     _cleanup_slots(runner)
     if first_slot is not None:
         _cleanup_slot_files(first_slot)
+
+
+def test_provider_assignment_is_sticky_and_wraps_in_round_robin() -> None:
+    tf = _make_task_file(["TASK-001", "TASK-002", "TASK-003", "TASK-004"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude", "codex", "gemini"],
+        max_parallel=1,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, _AsyncTestEngine("seed"), Scheduler(tf))
+
+    assert runner._provider_for_task("TASK-001") == "claude"
+    assert runner._provider_for_task("TASK-002") == "codex"
+    # Repeated lookup for the same task must keep the assigned provider.
+    assert runner._provider_for_task("TASK-001") == "claude"
+    assert runner._provider_for_task("TASK-003") == "gemini"
+    # Next unseen task wraps to the beginning.
+    assert runner._provider_for_task("TASK-004") == "claude"
+
+
+def test_rotate_provider_wraps_back_to_first_provider() -> None:
+    tf = _make_task_file(["TASK-001"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude", "codex", "gemini"],
+        max_parallel=1,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, _AsyncTestEngine("seed"), Scheduler(tf))
+    runner.task_providers["TASK-001"] = "gemini"
+
+    switch = runner._rotate_provider_for_task("TASK-001")
+    assert switch == ("gemini", "claude")
+    assert runner.task_providers["TASK-001"] == "claude"
+
+
+def test_external_failure_retry_wraps_to_first_provider(git_repo: Path) -> None:
+    tf = _make_task_file(["TASK-001"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude", "codex", "gemini"],
+        max_parallel=1,
+        max_retries=1,
+        retry_delay=0,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, ClaudeEngine(), Scheduler(tf))
+    runner.task_providers["TASK-001"] = "gemini"
+
+    worktree_base = git_repo / "worktrees"
+    worktree_base.mkdir(exist_ok=True)
+
+    first_slot = None
+    with patch(
+        "gralph.runner.get_engine",
+        side_effect=lambda provider, opencode_model="": _AsyncTestEngine(provider),
+    ) as mock_get_engine:
+        with patch(
+            "gralph.runner.create_agent_worktree",
+            side_effect=_worktree_factory(worktree_base),
+        ):
+            with patch("gralph.runner.cleanup_agent_worktree"):
+                with patch.object(runner, "_save_report"):
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+                    first_slot = runner.active.pop()
+                    first_slot.proc.wait(timeout=5)
+
+                    runner._handle_failure(
+                        first_slot,
+                        git_repo,
+                        "TASK-001",
+                        "Rate limit exceeded",
+                    )
+                    assert runner.sched.state("TASK-001") == TaskState.PENDING
+                    assert runner.task_providers["TASK-001"] == "claude"
+
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+
+    assert [slot.provider for slot in runner.active] == ["claude"]
+    assert [call.args[0] for call in mock_get_engine.call_args_list] == ["gemini", "claude"]
+    assert runner.provider_usage["claude"] == 1
+    assert runner.provider_usage["codex"] == 0
+    assert runner.provider_usage["gemini"] == 1
+    assert runner.task_provider_attempts["TASK-001"] == ["gemini", "claude"]
+    _cleanup_slots(runner)
+    if first_slot is not None:
+        _cleanup_slot_files(first_slot)
+
+
+def test_internal_failure_does_not_rotate_provider_on_failure(git_repo: Path) -> None:
+    tf = _make_task_file(["TASK-001"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude", "codex"],
+        max_parallel=1,
+        max_retries=1,
+        retry_delay=0,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, ClaudeEngine(), Scheduler(tf))
+
+    worktree_base = git_repo / "worktrees"
+    worktree_base.mkdir(exist_ok=True)
+
+    first_slot = None
+    with patch(
+        "gralph.runner.get_engine",
+        side_effect=lambda provider, opencode_model="": _AsyncTestEngine(provider),
+    ):
+        with patch(
+            "gralph.runner.create_agent_worktree",
+            side_effect=_worktree_factory(worktree_base),
+        ):
+            with patch("gralph.runner.cleanup_agent_worktree"):
+                with patch.object(runner, "_save_report"):
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+                    first_slot = runner.active.pop()
+                    first_slot.proc.wait(timeout=5)
+
+                    runner._handle_failure(
+                        first_slot,
+                        git_repo,
+                        "TASK-001",
+                        "AssertionError: deterministic test failure",
+                    )
+
+    assert runner.sched.state("TASK-001") == TaskState.FAILED
+    assert runner.task_providers["TASK-001"] == "claude"
+    assert runner.provider_usage["claude"] == 1
+    assert runner.provider_usage["codex"] == 0
+    assert runner.task_provider_attempts["TASK-001"] == ["claude"]
+    if first_slot is not None:
+        _cleanup_slot_files(first_slot)

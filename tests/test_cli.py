@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
-# Import the CLI main so we can invoke it with Click's CliRunner
-from gralph.cli import main
+# Import CLI helpers directly for unit-level parsing tests.
+from gralph.cli import main, _parse_providers_option, _resolve_cli_engine_and_providers
 from gralph.config import Config, DEFAULT_PROVIDERS
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import read_text, write_text
@@ -239,6 +239,47 @@ class TestCliProvidersOption:
         r = cli_runner.invoke(main, ["--codex", "--gemini"])
         assert r.exit_code != 0
         assert "Conflicting engine flags selected" in r.output
+
+
+class TestCliProvidersParsingUnits:
+    """Direct unit tests for provider parsing and engine/provider resolution."""
+
+    def test_parse_providers_normalizes_case_and_whitespace(self) -> None:
+        assert _parse_providers_option("  CoDeX, gemini , CLAUDE ") == [
+            "codex",
+            "gemini",
+            "claude",
+        ]
+
+    def test_parse_providers_unknown_error_lists_each_unknown_once(self) -> None:
+        with pytest.raises(click.BadParameter) as excinfo:
+            _parse_providers_option("unknown,claude,unknown,other")
+
+        assert "Unknown provider(s): unknown, other" in str(excinfo.value)
+
+    def test_parse_providers_rejects_case_insensitive_duplicates(self) -> None:
+        with pytest.raises(click.BadParameter) as excinfo:
+            _parse_providers_option("CoDeX,codex")
+
+        assert "Duplicate provider(s): codex" in str(excinfo.value)
+
+    def test_resolve_engine_and_providers_keeps_order_for_provider_list(self) -> None:
+        engine_name, provider_list = _resolve_cli_engine_and_providers(
+            (),
+            "gemini,codex,claude",
+        )
+
+        assert engine_name == "gemini"
+        assert provider_list == ["gemini", "codex", "claude"]
+
+    def test_resolve_engine_and_providers_allows_repeating_same_engine_flag(self) -> None:
+        engine_name, provider_list = _resolve_cli_engine_and_providers(
+            ("codex", "codex"),
+            "",
+        )
+
+        assert engine_name == "codex"
+        assert provider_list == ["codex"]
 
 
 # ── --dry-run (full pipeline until dry-run output) ────────────────────────
