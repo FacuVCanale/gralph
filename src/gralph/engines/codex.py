@@ -110,6 +110,7 @@ class CodexEngine(EngineBase):
                 encoding="utf-8",
                 errors="replace",
                 cwd=cwd,
+                **self._async_popen_kwargs(),
             )
             if proc.stdin:
                 try:
@@ -127,6 +128,7 @@ class CodexEngine(EngineBase):
             encoding="utf-8",
             errors="replace",
             cwd=cwd,
+            **self._async_popen_kwargs(),
         )
 
     def parse_output(self, raw: str) -> EngineResult:

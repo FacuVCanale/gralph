@@ -140,6 +140,25 @@ class TestOpenCodeEngine:
         assert result.return_code == 1
         assert result.error == "network unavailable"
 
+    def test_run_async_uses_new_process_group_on_windows(self, tmp_path: Path) -> None:
+        engine = OpenCodeEngine()
+        fake_proc = MagicMock()
+
+        with patch("gralph.engines.base.sys.platform", "win32"), patch(
+            "gralph.engines.opencode.subprocess.Popen", return_value=fake_proc
+        ) as mock_popen:
+            proc = engine.run_async(
+                "prompt",
+                cwd=tmp_path,
+                stdout_file=tmp_path / "out.log",
+                stderr_file=tmp_path / "err.log",
+            )
+
+        assert proc is fake_proc
+        assert mock_popen.call_args.kwargs.get("creationflags", 0) != 0
+        called_env = mock_popen.call_args.kwargs.get("env", {})
+        assert called_env.get("OPENCODE_PERMISSION") == '{"*":"allow"}'
+
     def test_check_available_reports_missing_binary(self) -> None:
         with patch("gralph.engines.opencode.shutil.which", return_value=None):
             engine = OpenCodeEngine()
@@ -197,9 +216,9 @@ class TestCodexEngine:
         fake_proc = MagicMock()
         fake_proc.stdin = MagicMock()
 
-        with patch("gralph.engines.codex.platform.system", return_value="Windows"), patch(
-            "gralph.engines.codex.subprocess.Popen", return_value=fake_proc
-        ) as mock_popen:
+        with patch("gralph.engines.base.sys.platform", "win32"), patch(
+            "gralph.engines.codex.platform.system", return_value="Windows"
+        ), patch("gralph.engines.codex.subprocess.Popen", return_value=fake_proc) as mock_popen:
             proc = engine.run_async(
                 "prompt text",
                 cwd=tmp_path,
@@ -209,6 +228,7 @@ class TestCodexEngine:
 
         assert proc is fake_proc
         assert "-" in mock_popen.call_args.args[0]
+        assert mock_popen.call_args.kwargs.get("creationflags", 0) != 0
         fake_proc.stdin.write.assert_called_once_with("prompt text")
         fake_proc.stdin.close.assert_called_once()
 

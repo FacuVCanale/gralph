@@ -421,3 +421,41 @@ class TestProcessCleanup:
             runner._reap_finished(git_repo)
 
             assert len(runner.active) == 0
+
+
+class TestInterruptHandling:
+    """Test explicit interrupt cleanup for active workers."""
+
+    def test_abort_all_active_kills_running_processes(self, git_repo: Path):
+        tf = _tf([_t("A", "Task A")])
+        cfg = Config(max_parallel=1, base_branch="main", artifacts_dir="artifacts/test")
+        engine = MockEngine(behavior="stalled")
+        scheduler = Scheduler(tf)
+
+        runner = Runner(cfg, tf, engine, scheduler)
+        runner.cfg.original_dir = str(git_repo)
+        runner.cfg.base_branch = "main"
+        (git_repo / "artifacts" / "test" / "reports").mkdir(parents=True, exist_ok=True)
+
+        with patch("gralph.runner.create_agent_worktree") as mock_wt, patch(
+            "gralph.runner.cleanup_agent_worktree"
+        ):
+            wt_dir = git_repo / "wt"
+            wt_dir.mkdir(exist_ok=True)
+            mock_wt.return_value = (wt_dir, "gralph/agent-1")
+            write_text(git_repo / "tasks.yaml", "branchName: test\ntasks: []")
+
+            runner._launch_agent("A", git_repo, git_repo / "worktrees")
+            assert len(runner.active) == 1
+            slot = runner.active[0]
+            assert slot.proc.poll() is None
+
+            runner._abort_all_active(git_repo)
+
+            assert len(runner.active) == 0
+            assert scheduler.state("A") == TaskState.FAILED
+            assert slot.proc.poll() is not None
+
+            report_file = git_repo / "artifacts" / "test" / "reports" / "A.json"
+            assert report_file.exists()
+            assert "Interrupted by user (Ctrl-C)" in read_text(report_file)

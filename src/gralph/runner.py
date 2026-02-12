@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -136,6 +137,9 @@ class Runner:
         self.completed_task_ids: list[str] = []
         self.retry_counts: dict[str, int] = {}
         self.retry_after: dict[str, float] = {}
+        self._stop_requested = False
+        self._interrupt_count = 0
+        self._orig_signal_handlers: dict[int, object] = {}
 
     def run(self) -> bool:
         """Execute all tasks. Returns ``True`` on success."""
@@ -150,9 +154,16 @@ class Runner:
         log.info(f"Running DAG-aware parallel execution (max {self.cfg.max_parallel} agents)…")
         log.info(f"Tasks: {self.sched.count_pending()} pending")
 
+        self._install_signal_handlers()
         try:
-            return self._main_loop(original_dir, worktree_base)
+            try:
+                return self._main_loop(original_dir, worktree_base)
+            except KeyboardInterrupt:
+                self._stop_requested = True
+                self._abort_all_active(original_dir)
+                return False
         finally:
+            self._restore_signal_handlers()
             # Cleanup
             if worktree_base.exists():
                 shutil.rmtree(worktree_base, ignore_errors=True)
@@ -161,8 +172,16 @@ class Runner:
         external_fail = False
 
         while True:
+            if self._stop_requested:
+                self._abort_all_active(original_dir)
+                return False
+
             # 1. Check finished agents
             self._reap_finished(original_dir)
+
+            if self._stop_requested:
+                self._abort_all_active(original_dir)
+                return False
 
             # 2. Check completion / deadlock
             pending = self.sched.count_pending()
@@ -191,6 +210,84 @@ class Runner:
             time.sleep(0.5)
 
         return True
+
+    def _install_signal_handlers(self) -> None:
+        """Install handlers so Ctrl-C can stop long-running parallel work."""
+        self._orig_signal_handlers = {}
+        signals_to_handle = [signal.SIGINT]
+        if hasattr(signal, "SIGBREAK"):
+            signals_to_handle.append(signal.SIGBREAK)
+        if hasattr(signal, "SIGTERM"):
+            signals_to_handle.append(signal.SIGTERM)
+
+        for sig in signals_to_handle:
+            try:
+                self._orig_signal_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, self._on_signal)
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+    def _restore_signal_handlers(self) -> None:
+        for sig, handler in self._orig_signal_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except (OSError, RuntimeError, ValueError):
+                continue
+        self._orig_signal_handlers = {}
+
+    def _on_signal(self, signum: int, _frame: object) -> None:
+        self._interrupt_count += 1
+        self._stop_requested = True
+        if self._interrupt_count == 1:
+            log.warn(f"Interrupt received (signal {signum}). Stopping agents...")
+        else:
+            log.warn(f"Interrupt received again (signal {signum}). Forcing stop...")
+
+    def _abort_all_active(self, original_dir: Path) -> None:
+        """Kill active agents, write failure reports, and clean up worktrees."""
+        if not self.active:
+            return
+
+        log.warn(f"Stopping {len(self.active)} active agent(s)...")
+        slots = list(self.active)
+        self.active = []
+
+        for slot in slots:
+            if slot.proc.poll() is None:
+                try:
+                    slot.proc.terminate()
+                except OSError:
+                    pass
+                try:
+                    slot.proc.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if slot.proc.poll() is None:
+                try:
+                    slot.proc.kill()
+                except OSError:
+                    pass
+
+            self.sched.fail_task(slot.task_id)
+            self._persist_log(slot.task_id, slot.log_file, slot.stream_file, original_dir)
+            retries_used = self.retry_counts.get(slot.task_id, 0)
+            self._save_report(
+                slot,
+                original_dir,
+                "failed",
+                0,
+                "Interrupted by user (Ctrl-C)",
+                attempt=retries_used + 1,
+                retries=retries_used,
+            )
+            cleanup_agent_worktree(
+                slot.worktree_dir,
+                slot.branch_name,
+                original_dir=original_dir,
+                log_file=slot.log_file,
+            )
+            for f in [slot.status_file, slot.output_file, slot.log_file, slot.stream_file]:
+                f.unlink(missing_ok=True)
 
     def _get_ready_tasks(self) -> list[str]:
         """Return ready tasks, honoring retry delays."""

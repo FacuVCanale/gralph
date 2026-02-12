@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -128,7 +129,17 @@ class EngineBase(ABC):
             encoding="utf-8",
             errors="replace",
             cwd=cwd,
+            **self._async_popen_kwargs(),
         )
+
+    @staticmethod
+    def _async_popen_kwargs() -> dict[str, int]:
+        """Extra Popen kwargs for async worker processes."""
+        if sys.platform == "win32":
+            flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if flag:
+                return {"creationflags": flag}
+        return {}
 
     @staticmethod
     def _check_errors(raw: str) -> str:

@@ -111,6 +111,7 @@ class OpenCodeEngine(EngineBase):
             errors="replace",
             cwd=cwd,
             env=env,
+            **self._async_popen_kwargs(),
         )
 
     def parse_output(self, raw: str) -> EngineResult:
