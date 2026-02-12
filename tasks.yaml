@@ -32,6 +32,6 @@ tasks:
 
 - id: TASK-006
   title: "Add unit tests for GeminiEngine (build_cmd, parse_output, check_available)"
-  completed: false
+  completed: true
   dependsOn: ["TASK-001", "TASK-003"]
   mutex: []
