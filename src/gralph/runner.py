@@ -693,12 +693,12 @@ class Runner:
         # Merge or create PR
         merge_ok = True
         merge_error = ""
+        delete_merged_branch = False
         if not self.cfg.create_pr:
             log.info(f"Merging {slot.branch_name} into {self.cfg.base_branch}…")
             merge_result = merge_no_edit_result(slot.branch_name, cwd=original_dir)
             if merge_result.returncode == 0:
-                delete_branch(slot.branch_name, cwd=original_dir)
-                self.completed_branches.append(slot.branch_name)
+                delete_merged_branch = True
             else:
                 merge_ok = False
                 merge_abort(cwd=original_dir)
@@ -764,6 +764,9 @@ class Runner:
             original_dir=original_dir,
             log_file=slot.log_file,
         )
+        if delete_merged_branch:
+            delete_branch(slot.branch_name, cwd=original_dir)
+            self.completed_branches.append(slot.branch_name)
 
 
     def _handle_failure(

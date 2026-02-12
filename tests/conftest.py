@@ -16,6 +16,29 @@ from gralph.io_utils import write_text
 from gralph.tasks.model import Task, TaskFile
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register opt-in switch for expensive end-to-end tests."""
+    parser.addoption(
+        "--run-e2e",
+        action="store_true",
+        default=False,
+        help="Run end-to-end tests marked with 'e2e'.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip e2e tests unless explicitly enabled."""
+    if config.getoption("--run-e2e"):
+        return
+
+    skip_e2e = pytest.mark.skip(
+        reason="E2E tests are skipped by default. Use --run-e2e to include them.",
+    )
+    for item in items:
+        if "e2e" in item.keywords:
+            item.add_marker(skip_e2e)
+
+
 @pytest.fixture
 def git_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo for testing."""

@@ -56,3 +56,8 @@ line-length = 100
 [tool.mypy]
 python_version = "3.10"
 strict = true
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests that run only when --run-e2e is provided",
+]
