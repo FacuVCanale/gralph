@@ -430,6 +430,106 @@ class TestCliPrdSubcommand:
         err = proc.stdout + proc.stderr
         assert not ("ModuleNotFoundError" in err and "gralph.tasks" in err), f"CLI crashed: {err!r}"
 
+    def test_build_prd_phase2_prompt_includes_questions_and_answers(self):
+        from gralph.cli import _build_prd_phase2_prompt
+
+        prompt = _build_prd_phase2_prompt(
+            skill_instruction="Skill block",
+            description="Implement provider fallback",
+            questions_text="1. Assignment?\nA. First\nB. Round-robin",
+            user_answers="1B, keep logs",
+            save_path_str="tasks/prd-temp.md",
+        )
+
+        assert "Clarifying questions that were asked:" in prompt
+        assert "1. Assignment?" in prompt
+        assert "User's answers to clarifying questions:" in prompt
+        assert "1B, keep logs" in prompt
+        assert "Interpret answer codes by number+letter." in prompt
+        assert "Save the PRD to: tasks/prd-temp.md" in prompt
+
+    def test_prd_generation_phase2_prompt_uses_questions_and_answers(self, tmp_path: Path):
+        from gralph.cli import _run_prd_generation
+
+        cfg = Config(ai_engine="claude", verbose=False)
+        prompts: list[str] = []
+        questions = (
+            "1. How should providers be assigned?\n"
+            "A. First available\n"
+            "B. Round-robin\n"
+        )
+
+        mock_engine = MagicMock()
+        mock_engine.check_available.return_value = None
+
+        def _run_sync(prompt: str, **kwargs):
+            prompts.append(prompt)
+            cwd = kwargs["cwd"]
+            if len(prompts) == 1:
+                return EngineResult(text=f"{questions}\n---END_QUESTIONS---")
+            write_text(cwd / "tasks" / "prd-temp.md", "# PRD: Test\n\nprd-id: test\n\nBody.\n")
+            return EngineResult(text="ok")
+
+        mock_engine.run_sync.side_effect = _run_sync
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("gralph.engines.registry.get_engine", return_value=mock_engine):
+                with patch("gralph.cli._find_prd_skill", return_value=None):
+                    with patch.object(sys.stdin, "isatty", return_value=True):
+                        with patch("gralph.cli.click.prompt", return_value="1B"):
+                            _run_prd_generation(cfg, "Implement provider fallback", "", no_questions=False)
+        finally:
+            os.chdir(old_cwd)
+
+        assert len(prompts) == 2
+        phase2_prompt = prompts[1]
+        assert "Clarifying questions that were asked:" in phase2_prompt
+        assert "1. How should providers be assigned?" in phase2_prompt
+        assert "User's answers to clarifying questions:" in phase2_prompt
+        assert "1B" in phase2_prompt
+
+    def test_find_prd_skill_for_claude_prefers_bundled_over_user(self, tmp_path: Path):
+        from gralph.cli import _find_prd_skill
+
+        fake_repo = tmp_path / "repo"
+        fake_home = tmp_path / "home"
+
+        user_skill = fake_home / ".claude" / "skills" / "prd" / "SKILL.md"
+        user_skill.parent.mkdir(parents=True, exist_ok=True)
+        user_skill.write_text("# user skill")
+
+        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
+        bundled.parent.mkdir(parents=True, exist_ok=True)
+        bundled.write_text("# bundled skill")
+
+        with patch("gralph.config.resolve_repo_root", return_value=fake_repo):
+            with patch("pathlib.Path.home", return_value=fake_home):
+                result = _find_prd_skill("claude")
+
+        assert result == bundled
+
+    def test_find_prd_skill_for_claude_prefers_project_specific(self, tmp_path: Path):
+        from gralph.cli import _find_prd_skill
+
+        fake_repo = tmp_path / "repo"
+        fake_home = tmp_path / "home"
+
+        project_skill = fake_repo / ".claude" / "skills" / "prd" / "SKILL.md"
+        project_skill.parent.mkdir(parents=True, exist_ok=True)
+        project_skill.write_text("# project skill")
+
+        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
+        bundled.parent.mkdir(parents=True, exist_ok=True)
+        bundled.write_text("# bundled skill")
+
+        with patch("gralph.config.resolve_repo_root", return_value=fake_repo):
+            with patch("pathlib.Path.home", return_value=fake_home):
+                result = _find_prd_skill("claude")
+
+        assert result == project_skill
+
     def test_prd_rename_overwrites_existing_file(self, tmp_path: Path):
         """When renaming prd-temp.md to prd-<id>.md, overwrite existing target (Windows-safe)."""
         from gralph.cli import _run_prd_single

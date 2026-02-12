@@ -67,17 +67,28 @@ class TestClaudeEngine:
 
     def test_run_sync_surfaces_first_stderr_line_when_subprocess_fails(self) -> None:
         engine = ClaudeEngine()
-        failed = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=2,
-            stdout="",
-            stderr="Permission denied\nmore details",
-        )
-        with patch("gralph.engines.base.subprocess.run", return_value=failed):
+        fake_proc = MagicMock()
+        fake_proc.communicate.return_value = ("", "Permission denied\nmore details")
+        fake_proc.returncode = 2
+
+        with patch("gralph.engines.base.subprocess.Popen", return_value=fake_proc):
             result = engine.run_sync("prompt")
 
         assert result.return_code == 2
         assert result.error == "Permission denied"
+
+    def test_run_sync_keyboard_interrupt_terminates_subprocess(self) -> None:
+        engine = ClaudeEngine()
+        fake_proc = MagicMock()
+        fake_proc.communicate.side_effect = KeyboardInterrupt
+        fake_proc.poll.return_value = None
+        fake_proc.wait.return_value = 0
+
+        with patch("gralph.engines.base.subprocess.Popen", return_value=fake_proc):
+            with pytest.raises(KeyboardInterrupt):
+                engine.run_sync("prompt")
+
+        fake_proc.terminate.assert_called_once()
 
     def test_check_available_reports_missing_binary(self) -> None:
         with patch("gralph.engines.claude.shutil.which", return_value=None):

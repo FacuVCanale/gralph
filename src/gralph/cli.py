@@ -238,6 +238,7 @@ def _run_prd_generation(
     if skill_path:
         skill_content = read_text(skill_path)
         skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
+        glog.debug(f"Using PRD skill: {skill_path}")
     else:
         glog.warn("PRD skill not found; using built-in prompt. Run 'gralph --init' to install skills.")
         skill_instruction = ""
@@ -297,24 +298,64 @@ OUTPUT ONLY 3-5 CLARIFYING QUESTIONS (Step 1 in the skill). Use the format with 
         user_answers = ""
 
     # Phase 2 — generate PRD incorporating answers
-    answers_block = f"\nUser's answers to clarifying questions:\n{user_answers}\n\n" if user_answers else "\n(No answers provided; infer reasonable defaults and note assumptions in Open Questions.)\n\n"
-    prompt2 = f"""{skill_instruction}
+    prompt2 = _build_prd_phase2_prompt(
+        skill_instruction=skill_instruction,
+        description=description,
+        questions_text=questions_text,
+        user_answers=user_answers,
+        save_path_str=save_path_str,
+    )
+
+    _run_prd_single(
+        cfg, engine, invocation_dir, description, save_path_str, output_path, tasks_dir, write_path_abs, prompt=prompt2
+    )
+
+
+def _build_prd_phase2_prompt(
+    *,
+    skill_instruction: str,
+    description: str,
+    questions_text: str,
+    user_answers: str,
+    save_path_str: str,
+) -> str:
+    """Build phase-2 PRD prompt with full Q&A context for one-shot engines."""
+    clarifications = ""
+    if questions_text:
+        clarifications = (
+            "Clarifying questions that were asked:\n"
+            f"{questions_text.strip()}\n\n"
+        )
+
+    if user_answers:
+        answers_block = (
+            "User's answers to clarifying questions:\n"
+            f"{user_answers.strip()}\n\n"
+        )
+        answer_rules = (
+            "Interpret answer codes by number+letter. "
+            "Example: 1C means option C for question 1. "
+            "Prioritize the user's explicit choices over inferred defaults.\n\n"
+        )
+    else:
+        answers_block = "(No answers provided.)\n\n"
+        answer_rules = (
+            "No answers were provided. Infer reasonable defaults and note assumptions in "
+            "the Open Questions section.\n\n"
+        )
+
+    return f"""{skill_instruction}
 
 Feature request from the user:
 {description}
-{answers_block}
 
-IMPORTANT RULES:
-1. Incorporate the user's answers into the PRD. If no answers were given, infer reasonable defaults and note assumptions in the Open Questions section.
+{clarifications}{answers_block}{answer_rules}IMPORTANT RULES:
+1. Incorporate the user's answers into the PRD.
 2. The PRD MUST start with `# PRD: <Title>` (you choose a short, descriptive title).
 3. On the next non-blank line after the title, add `prd-id: <id>` where <id> is a short, URL-safe identifier you choose (lowercase, hyphens only, e.g. provider-fallback-rate-limit). Keep it under 50 characters.
 4. Do NOT ask more questions — generate the full PRD now.
 5. Save the PRD to: {save_path_str}
 6. Do NOT implement anything — only create the PRD file."""
-
-    _run_prd_single(
-        cfg, engine, invocation_dir, description, save_path_str, output_path, tasks_dir, write_path_abs, prompt=prompt2
-    )
 
 
 def _run_prd_single(
@@ -338,6 +379,7 @@ def _run_prd_single(
         if skill_path:
             skill_content = read_text(skill_path)
             skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
+            glog.debug(f"Using PRD skill: {skill_path}")
         else:
             skill_instruction = ""
         prompt = f"""Follow these instructions for creating the PRD:\n\n{skill_instruction}
@@ -516,37 +558,42 @@ def _find_prd_skill(engine_name: str) -> Path | None:
 
     repo = resolve_repo_root()
     home = Path.home()
+    bundled = repo / "skills/prd/SKILL.md"
 
     candidates: list[Path] = []
     match engine_name:
         case "claude":
             candidates = [
                 repo / ".claude/skills/prd/SKILL.md",
+                bundled,
                 home / ".claude/skills/prd/SKILL.md",
             ]
         case "codex":
             candidates = [
                 repo / ".codex/skills/prd/SKILL.md",
+                bundled,
                 home / ".codex/skills/prd/SKILL.md",
             ]
         case "opencode":
             candidates = [
                 repo / ".opencode/skill/prd/SKILL.md",
+                bundled,
                 home / ".config/opencode/skill/prd/SKILL.md",
             ]
         case "cursor":
             candidates = [
                 repo / ".cursor/rules/prd.mdc",
                 repo / ".cursor/commands/prd.md",
+                bundled,
             ]
         case "gemini":
             candidates = [
                 repo / ".gemini/skills/prd/SKILL.md",
+                bundled,
                 home / ".gemini/skills/prd/SKILL.md",
             ]
-
-    # Also check the bundled skills dir
-    candidates.append(repo / "skills/prd/SKILL.md")
+        case _:
+            candidates = [bundled]
 
     for c in candidates:
         if c.is_file():

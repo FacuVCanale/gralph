@@ -187,6 +187,42 @@ class TestFindPrdSkillGemini:
 
         assert result == skill_path
 
+    def test_prefers_bundled_over_user_skill(self, fake_repo: Path, fake_home: Path) -> None:
+        from gralph.cli import _find_prd_skill
+
+        user_skill = fake_home / ".gemini" / "skills" / "prd" / "SKILL.md"
+        user_skill.parent.mkdir(parents=True, exist_ok=True)
+        user_skill.write_text("# user skill")
+
+        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
+        bundled.parent.mkdir(parents=True, exist_ok=True)
+        bundled.write_text("# bundled skill")
+
+        with self._patch_cli_roots(fake_repo, fake_home):
+            result = _find_prd_skill("gemini")
+
+        assert result == bundled
+
+    def test_prefers_project_over_bundled_and_user(self, fake_repo: Path, fake_home: Path) -> None:
+        from gralph.cli import _find_prd_skill
+
+        project_skill = fake_repo / ".gemini" / "skills" / "prd" / "SKILL.md"
+        project_skill.parent.mkdir(parents=True, exist_ok=True)
+        project_skill.write_text("# project skill")
+
+        user_skill = fake_home / ".gemini" / "skills" / "prd" / "SKILL.md"
+        user_skill.parent.mkdir(parents=True, exist_ok=True)
+        user_skill.write_text("# user skill")
+
+        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
+        bundled.parent.mkdir(parents=True, exist_ok=True)
+        bundled.write_text("# bundled skill")
+
+        with self._patch_cli_roots(fake_repo, fake_home):
+            result = _find_prd_skill("gemini")
+
+        assert result == project_skill
+
     def test_falls_back_to_bundled_skill(self, fake_repo: Path, fake_home: Path) -> None:
         from gralph.cli import _find_prd_skill
 

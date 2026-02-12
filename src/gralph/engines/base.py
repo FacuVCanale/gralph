@@ -62,35 +62,43 @@ class EngineBase(ABC):
         start = time.monotonic()
 
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdin=None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 cwd=cwd,
-                timeout=timeout,
             )
-        except subprocess.TimeoutExpired:
-            return EngineResult(error="timeout", return_code=-1)
         except FileNotFoundError:
             return EngineResult(error=f"{cmd[0]} not found", return_code=-1)
+
+        try:
+            proc_stdout, proc_stderr = self._communicate_with_interrupts(proc, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._terminate_process(proc)
+            return EngineResult(error="timeout", return_code=-1)
+        except KeyboardInterrupt:
+            self._terminate_process(proc)
+            raise
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             with open_text(log_file, "a") as f:
-                if proc.stderr:
-                    f.write(proc.stderr)
+                if proc_stderr:
+                    f.write(proc_stderr)
 
-        result = self.parse_output(proc.stdout or "")
+        result = self.parse_output(proc_stdout or "")
         result.return_code = proc.returncode
         if not result.duration_ms:
             result.duration_ms = elapsed_ms
 
         # Check for common errors in output
-        error = self._check_errors(proc.stdout)
+        error = self._check_errors(proc_stdout or "")
         if error and not result.error:
             result.error = error
 
@@ -98,7 +106,7 @@ class EngineBase(ABC):
         # on Windows) report argument/permission issues on stderr and otherwise
         # produce empty stdout, which makes failures look like "did nothing".
         if proc.returncode != 0 and not result.error:
-            stderr = (proc.stderr or "").strip()
+            stderr = (proc_stderr or "").strip()
             if stderr:
                 # Keep it readable in CLI output
                 result.error = stderr.splitlines()[0]
@@ -106,6 +114,54 @@ class EngineBase(ABC):
                 result.error = f"exit code {proc.returncode}"
 
         return result
+
+    @staticmethod
+    def _communicate_with_interrupts(
+        proc: subprocess.Popen,
+        *,
+        timeout: int | None,
+    ) -> tuple[str, str]:
+        """Read process output while remaining responsive to KeyboardInterrupt."""
+        if timeout is None:
+            return proc.communicate()
+
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(proc.args, timeout)
+
+            wait_timeout = min(0.2, remaining)
+            try:
+                return proc.communicate(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                continue
+
+    @staticmethod
+    def _terminate_process(proc: subprocess.Popen) -> None:
+        """Terminate a subprocess promptly (best effort)."""
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except Exception:
+            pass
+
+        try:
+            proc.wait(timeout=2)
+            return
+        except Exception:
+            pass
+
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
 
     def run_async(
         self,
