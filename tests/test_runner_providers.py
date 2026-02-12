@@ -19,7 +19,7 @@ if "gralph.tasks.io" not in sys.modules:
     sys.modules["gralph.tasks.io"] = tasks_io_stub
 
 from gralph.runner import Runner
-from gralph.scheduler import Scheduler
+from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
 
 
@@ -75,6 +75,11 @@ def _cleanup_slots(runner: Runner) -> None:
         slot.proc.wait(timeout=5)
         for f in [slot.status_file, slot.output_file, slot.log_file, slot.stream_file]:
             f.unlink(missing_ok=True)
+
+
+def _cleanup_slot_files(slot) -> None:
+    for f in [slot.status_file, slot.output_file, slot.log_file, slot.stream_file]:
+        f.unlink(missing_ok=True)
 
 
 def test_round_robin_provider_assignment(git_repo: Path) -> None:
@@ -178,3 +183,99 @@ def test_retry_keeps_original_assigned_provider(git_repo: Path) -> None:
     assert [slot.provider for slot in runner.active] == ["claude", "claude"]
     assert [call.args[0] for call in mock_get_engine.call_args_list] == ["claude", "claude"]
     _cleanup_slots(runner)
+
+
+def test_external_failure_retry_falls_back_to_next_provider(git_repo: Path) -> None:
+    tf = _make_task_file(["TASK-001"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude", "codex", "gemini"],
+        max_parallel=1,
+        max_retries=1,
+        retry_delay=0,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, ClaudeEngine(), Scheduler(tf))
+
+    worktree_base = git_repo / "worktrees"
+    worktree_base.mkdir(exist_ok=True)
+
+    first_slot = None
+    with patch(
+        "gralph.runner.get_engine",
+        side_effect=lambda provider, opencode_model="": _AsyncTestEngine(provider),
+    ) as mock_get_engine:
+        with patch(
+            "gralph.runner.create_agent_worktree",
+            side_effect=_worktree_factory(worktree_base),
+        ):
+            with patch("gralph.runner.cleanup_agent_worktree"):
+                with patch.object(runner, "_save_report"):
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+                    first_slot = runner.active.pop()
+                    first_slot.proc.wait(timeout=5)
+
+                    runner._handle_failure(
+                        first_slot,
+                        git_repo,
+                        "TASK-001",
+                        "Rate limit exceeded",
+                    )
+                    assert runner.sched.state("TASK-001") == TaskState.PENDING
+                    assert runner.task_providers["TASK-001"] == "codex"
+
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+
+    assert [slot.provider for slot in runner.active] == ["codex"]
+    assert [call.args[0] for call in mock_get_engine.call_args_list] == ["claude", "codex"]
+    _cleanup_slots(runner)
+    if first_slot is not None:
+        _cleanup_slot_files(first_slot)
+
+
+def test_external_failure_retry_keeps_provider_when_only_one(git_repo: Path) -> None:
+    tf = _make_task_file(["TASK-001"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude"],
+        max_parallel=1,
+        max_retries=1,
+        retry_delay=0,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, ClaudeEngine(), Scheduler(tf))
+
+    worktree_base = git_repo / "worktrees"
+    worktree_base.mkdir(exist_ok=True)
+
+    first_slot = None
+    with patch(
+        "gralph.runner.get_engine",
+        side_effect=lambda provider, opencode_model="": _AsyncTestEngine(provider),
+    ) as mock_get_engine:
+        with patch(
+            "gralph.runner.create_agent_worktree",
+            side_effect=_worktree_factory(worktree_base),
+        ):
+            with patch("gralph.runner.cleanup_agent_worktree"):
+                with patch.object(runner, "_save_report"):
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+                    first_slot = runner.active.pop()
+                    first_slot.proc.wait(timeout=5)
+
+                    runner._handle_failure(
+                        first_slot,
+                        git_repo,
+                        "TASK-001",
+                        "Rate limit exceeded",
+                    )
+                    assert runner.sched.state("TASK-001") == TaskState.PENDING
+                    assert runner.task_providers["TASK-001"] == "claude"
+
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+
+    assert [slot.provider for slot in runner.active] == ["claude"]
+    assert [call.args[0] for call in mock_get_engine.call_args_list] == ["claude", "claude"]
+    _cleanup_slots(runner)
+    if first_slot is not None:
+        _cleanup_slot_files(first_slot)

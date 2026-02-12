@@ -319,6 +319,28 @@ class Runner:
         self.task_providers[task_id] = provider
         return provider
 
+    def _rotate_provider_for_task(self, task_id: str) -> tuple[str, str] | None:
+        """Switch *task_id* to the next distinct provider in configured order."""
+        if len(self.providers) <= 1:
+            return None
+
+        current = self.task_providers.get(task_id)
+        if not current:
+            current = self._provider_for_task(task_id)
+
+        try:
+            start_idx = self.providers.index(current)
+        except ValueError:
+            start_idx = -1
+
+        for offset in range(1, len(self.providers) + 1):
+            candidate = self.providers[(start_idx + offset) % len(self.providers)]
+            if candidate != current:
+                self.task_providers[task_id] = candidate
+                return current, candidate
+
+        return None
+
     def _task_engine_for_provider(self, provider: str) -> EngineBase:
         """Build a fresh engine instance for a task launch."""
         return self._engine_factory(provider)
@@ -746,16 +768,24 @@ class Runner:
         attempt = retries_used + 1
         max_attempts = self.cfg.max_retries + 1
         should_retry = self._should_retry(err_msg, retries_used)
+        provider_switch: tuple[str, str] | None = None
 
         if should_retry:
+            if _is_external_failure(err_msg):
+                provider_switch = self._rotate_provider_for_task(slot.task_id)
             self.retry_counts[slot.task_id] = retries_used + 1
             delay = max(self.cfg.retry_delay, 0)
             if delay:
                 self.retry_after[slot.task_id] = time.monotonic() + delay
             self.sched.retry_task(slot.task_id)
+            switch_note = ""
+            if provider_switch:
+                switch_note = (
+                    f" provider {provider_switch[0]} -> {provider_switch[1]}"
+                )
             log.console.print(
                 f"  [yellow]RETRY[/yellow] {title[:45]} ({slot.task_id}) "
-                f"in {delay}s (attempt {attempt + 1}/{max_attempts})"
+                f"in {delay}s (attempt {attempt + 1}/{max_attempts}){switch_note}"
             )
         else:
             self.sched.fail_task(slot.task_id)
