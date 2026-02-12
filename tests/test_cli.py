@@ -467,6 +467,69 @@ class TestCliPrdSubcommand:
         assert "old content" not in read_text(final_path)
         assert "provider-fallback-rate-limit" in read_text(final_path)
 
+    def test_prd_failure_without_error_shows_engine_output(self, tmp_path: Path, capsys):
+        """If engine returns text but no explicit error, surface that text when file is missing."""
+        from gralph.cli import _run_prd_single
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        write_path = tasks_dir / "prd-temp.md"
+
+        mock_engine = MagicMock()
+        mock_engine.run_sync.return_value = EngineResult(
+            text="Could not create file due policy constraints."
+        )
+
+        cfg = Config(ai_engine="codex", verbose=False)
+        with pytest.raises(SystemExit):
+            _run_prd_single(
+                cfg,
+                mock_engine,
+                tmp_path,
+                "provider fallback",
+                str(write_path),
+                "",  # output_path: use default naming
+                tasks_dir,
+                write_path,
+            )
+
+        captured = capsys.readouterr()
+        combined = f"{captured.out}\n{captured.err}"
+        assert "Engine output:" in combined
+        assert "Could not create file due policy constraints." in combined
+
+    def test_prd_single_retries_rate_limit_and_saves_returned_prd_text(self, tmp_path: Path):
+        """PRD flow should retry short rate limits and persist PRD when engine returns text."""
+        from gralph.cli import _run_prd_single
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        write_path = tasks_dir / "prd-temp.md"
+
+        mock_engine = MagicMock()
+        mock_engine.run_sync.side_effect = [
+            EngineResult(error="Rate limit exceeded"),
+            EngineResult(text="# PRD: Retry Test\n\nprd-id: retry-test\n\nBody.\n"),
+        ]
+
+        cfg = Config(ai_engine="codex", verbose=False)
+        with patch("gralph.cli.time.sleep", return_value=None):
+            _run_prd_single(
+                cfg,
+                mock_engine,
+                tmp_path,
+                "provider fallback",
+                str(write_path),
+                "",  # output_path: use default naming
+                tasks_dir,
+                write_path,
+            )
+
+        final_path = tasks_dir / "prd-retry-test.md"
+        assert final_path.is_file()
+        assert "prd-id: retry-test" in read_text(final_path)
+        assert mock_engine.run_sync.call_count == 2
+
 
 # ── PS1 aliases (optional, if we want to assert they're rewritten) ───────
 

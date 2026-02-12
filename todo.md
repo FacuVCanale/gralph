@@ -5,6 +5,7 @@
 - [ ] Implement "Allow All" permission mode: enable agents to automatically trigger and fix OS or environment-level failures.
 - [ ] Evaluate if mutexes are actually necessary (currently unused by agents).
 - [ ] Audit core requirements and remove unnecessary complexity.
+- [ ] Make a better PRD prompt (README, tests, Repo Structure, ...)
 
 ## Execution & Parallelism
 - [ ] Improve parallelization: Currently, execution is mostly sequential.

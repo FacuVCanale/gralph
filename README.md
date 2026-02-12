@@ -16,7 +16,7 @@ GRALPH reads a PRD, generates tasks with dependencies, and runs multiple agents 
 - Automatic resume on re-run
 - Stalled agent detection and automatic cleanup
 - External failure detection (network, permissions, rate limits)
-- Support for Claude Code, OpenCode, Codex, and Cursor
+- Support for Claude Code, OpenCode, Codex, Cursor, and Gemini CLI
 - Cross-platform: macOS, Linux, and Windows
 
 ## Install
@@ -45,8 +45,14 @@ gralph --update
 
 - **Python 3.10+**
 - **git**
-- One of: Claude Code CLI, OpenCode CLI, Codex CLI, or Cursor (`agent` in PATH)
+- One of: Claude Code CLI, OpenCode CLI, Codex CLI, Cursor (`agent` in PATH), or Gemini CLI (`gemini` in PATH)
 - Optional: `gh` (for creating PRs)
+
+### Gemini CLI Setup
+
+- Install Gemini CLI: https://github.com/google-gemini/gemini-cli
+- Ensure `gemini` is available in your `PATH`
+- Complete Gemini CLI auth/config before running `gralph --gemini`
 
 ## Quick Start
 
@@ -60,23 +66,21 @@ gralph prd "Add user authentication with OAuth"
 
 # Or create PRD.md manually (must include: prd-id: my-feature)
 
-# 3. Run gralph (parallel by default)
+# 3. Run gralph
 gralph
-
-# Or with a specific engine
-gralph --opencode
 ```
 
 ## Usage
 
 ```bash
-# Run with default engine (Claude Code)
+# Run with default configs
 gralph
 
 # Run with a specific engine
 gralph --opencode
 gralph --cursor
 gralph --codex
+gralph --gemini
 
 # Generate a PRD
 gralph prd "Add dark mode toggle"
@@ -117,6 +121,7 @@ gralph --stalled-timeout 900 --external-fail-timeout 600
 | `--opencode` | Use OpenCode |
 | `--cursor` | Use Cursor agent |
 | `--codex` | Use Codex CLI |
+| `--gemini` | Use Gemini CLI |
 | `--opencode-model MODEL` | Override OpenCode model (default: `opencode/minimax-m2.1-free`) |
 
 ### Execution
@@ -173,6 +178,7 @@ Generate a PRD from a feature description using the `prd` subcommand:
 ```bash
 gralph prd "Add user authentication with OAuth"
 gralph --codex prd "Implement dark mode toggle"
+gralph --gemini prd "Improve test reliability and CI logs"
 gralph prd -o PRD.md "Refactor payment flow"
 ```
 
@@ -181,7 +187,7 @@ gralph prd -o PRD.md "Refactor payment flow"
 | `DESCRIPTION` | Feature description (required, positional) |
 | `-o, --output FILE` | Output file path (default: `tasks/prd-<slug>.md`) |
 
-The subcommand inherits the engine from the parent (`--claude`, `--opencode`, etc.).
+The subcommand inherits the engine from the parent (`--claude`, `--opencode`, `--codex`, `--cursor`, `--gemini`).
 
 ## PRD Format
 

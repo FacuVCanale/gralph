@@ -146,16 +146,53 @@ class EngineBase(ABC):
         """Detect common error patterns in engine output."""
         if not raw:
             return ""
-        if '"error":"rate_limit"' in raw or "You've hit your limit" in raw:
-            return "Rate limit exceeded"
-        if '"type":"error"' in raw:
-            import json
 
-            for line in raw.splitlines():
-                if '"type":"error"' in line:
-                    try:
-                        obj = json.loads(line)
-                        return obj.get("error", {}).get("message", "Unknown error")
-                    except json.JSONDecodeError:
-                        return "Unknown error"
+        import json
+
+        # Prefer structured parsing to avoid false positives from plain text content.
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                obj = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(obj, dict):
+                continue
+
+            err = obj.get("error")
+            if isinstance(err, dict):
+                msg = str(err.get("message", "")).strip()
+                code = str(err.get("type", "") or err.get("code", "")).strip().lower()
+                if "rate_limit" in code or "rate limit" in code or "quota" in code:
+                    return msg or "Rate limit exceeded"
+                if msg:
+                    return msg
+
+            if isinstance(err, str):
+                err_lower = err.lower()
+                if "rate_limit" in err_lower or "rate limit" in err_lower or "quota" in err_lower:
+                    return "Rate limit exceeded"
+                if err.strip():
+                    return err.strip()
+
+            if str(obj.get("type", "")).lower() == "error":
+                msg = ""
+                if isinstance(obj.get("message"), str):
+                    msg = obj["message"].strip()
+                elif isinstance(obj.get("text"), str):
+                    msg = obj["text"].strip()
+
+                if msg:
+                    msg_lower = msg.lower()
+                    if "rate_limit" in msg_lower or "rate limit" in msg_lower or "quota" in msg_lower:
+                        return "Rate limit exceeded"
+                    return msg
+                return "Unknown error"
+
+        lower_raw = raw.lower()
+        if "you've hit your limit" in lower_raw:
+            return "Rate limit exceeded"
         return ""

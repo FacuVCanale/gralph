@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import shutil
 import subprocess
@@ -71,10 +72,6 @@ class CodexEngine(EngineBase):
         if not result.duration_ms:
             result.duration_ms = elapsed_ms
 
-        error = self._check_errors(proc.stdout)
-        if error and not result.error:
-            result.error = error
-
         if proc.returncode != 0 and not result.error:
             stderr = (proc.stderr or "").strip()
             if stderr:
@@ -83,7 +80,6 @@ class CodexEngine(EngineBase):
                 result.error = f"exit code {proc.returncode}"
 
         return result
-
 
     def run_async(
         self,
@@ -132,18 +128,103 @@ class CodexEngine(EngineBase):
         )
 
     def parse_output(self, raw: str) -> EngineResult:
-        # Codex output is simpler — we rely on commit detection
         result = EngineResult()
-        if raw:
-            # Remove generic completion line
-            lines = raw.strip().splitlines()
-            cleaned = [
-                l for l in lines if l.strip() != "Task completed successfully."
-            ]
-            result.text = "\n".join(cleaned) if cleaned else "Task completed"
-        else:
+        if not raw:
             result.text = "Task completed"
+            return result
+
+        assistant_parts: list[str] = []
+        fallback_lines: list[str] = []
+        saw_json_event = False
+
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            try:
+                obj = json.loads(stripped)
+                saw_json_event = True
+            except (json.JSONDecodeError, ValueError):
+                fallback_lines.append(stripped)
+                continue
+
+            if not isinstance(obj, dict):
+                continue
+
+            event_type = obj.get("type")
+            top_level_text = self._extract_text(obj)
+            if event_type == "agent_message" and top_level_text:
+                assistant_parts.append(top_level_text)
+
+            if not result.error:
+                err = obj.get("error")
+                if isinstance(err, dict):
+                    msg = str(err.get("message", "")).strip()
+                    code = str(err.get("type", "") or err.get("code", "")).strip().lower()
+                    if "rate_limit" in code or "rate limit" in code or "quota" in code:
+                        result.error = msg or "Rate limit exceeded"
+                    elif msg:
+                        result.error = msg
+                elif isinstance(err, str) and err.strip():
+                    lower_err = err.lower()
+                    if "rate_limit" in lower_err or "rate limit" in lower_err or "quota" in lower_err:
+                        result.error = "Rate limit exceeded"
+                    else:
+                        result.error = err.strip()
+
+            item = obj.get("item")
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                item_text = self._extract_text(item)
+                if item_type == "agent_message" and item_text:
+                    assistant_parts.append(item_text)
+                elif item_type == "error" and item_text and not result.error:
+                    result.error = item_text
+
+            if event_type == "error" and not result.error:
+                err = obj.get("error", "")
+                if isinstance(err, dict):
+                    result.error = str(err.get("message", "")).strip()
+                else:
+                    result.error = str(err).strip()
+
+        if assistant_parts:
+            result.text = "\n\n".join(assistant_parts).strip()
+            return result
+
+        cleaned = [line for line in fallback_lines if line != "Task completed successfully."]
+        if cleaned:
+            result.text = "\n".join(cleaned)
+            return result
+
+        if saw_json_event:
+            result.text = "Task completed"
+            return result
+
+        result.text = "Task completed"
         return result
+
+    @staticmethod
+    def _extract_text(payload: dict) -> str:
+        text = payload.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+
+        content = payload.get("content")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text:
+                    parts.append(part_text)
+            merged = "".join(parts).strip()
+            if merged:
+                return merged
+
+        return ""
 
     def check_available(self) -> str | None:
         if not shutil.which("codex"):

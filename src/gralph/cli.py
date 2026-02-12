@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -262,7 +263,13 @@ Feature request from the user:
 
 OUTPUT ONLY 3-5 CLARIFYING QUESTIONS (Step 1 in the skill). Use the format with numbered questions and lettered options (A, B, C, D). Do NOT write the PRD yet. Do NOT create or modify any files — output your response only in your reply. After the last question, output a blank line and then this exact line: ---END_QUESTIONS---"""
 
-    result1 = engine.run_sync(questions_prompt, cwd=invocation_dir)
+    result1 = _run_engine_with_rate_limit_retry(
+        cfg,
+        engine,
+        questions_prompt,
+        cwd=invocation_dir,
+        stage="clarifying questions",
+    )
     questions_text = result1.text
     if "---END_QUESTIONS---" in questions_text:
         questions_text = questions_text.split("---END_QUESTIONS---")[0].strip()
@@ -348,9 +355,22 @@ IMPORTANT RULES:
     glog.info(f"Generating PRD with {cfg.ai_engine}…")
     glog.info(f"Output: {write_path_abs}")
 
-    result = engine.run_sync(prompt, cwd=invocation_dir)
+    result = _run_engine_with_rate_limit_retry(
+        cfg,
+        engine,
+        prompt,
+        cwd=invocation_dir,
+        stage="PRD generation",
+    )
 
     out = write_path_abs
+    if not out.is_file():
+        details = (result.text or "").strip()
+        if _looks_like_prd_text(details):
+            serialized = details if details.endswith("\n") else f"{details}\n"
+            write_text(out, serialized)
+            glog.warn("Engine returned PRD text but did not write the file. Saved output locally.")
+
     if out.is_file():
         prd_id = extract_prd_id(out)
         if not prd_id:
@@ -376,7 +396,67 @@ IMPORTANT RULES:
                 glog.console.print(
                     "[dim]Tip: Run this command from Cursor's integrated terminal, or install the Cursor CLI and add it to PATH: https://cursor.com/docs/cli/installation[/dim]"
                 )
+        else:
+            details = (result.text or "").strip()
+            if details and details != "Task completed":
+                single_line = " ".join(details.split())
+                if len(single_line) > 500:
+                    single_line = single_line[:500].rstrip() + "..."
+                glog.error(f"Engine output: {single_line}")
         sys.exit(1)
+
+
+def _run_engine_with_rate_limit_retry(
+    cfg: Config,
+    engine: "EngineBase",
+    prompt: str,
+    *,
+    cwd: Path,
+    stage: str,
+    max_attempts: int = 3,
+) -> "EngineResult":
+    """Run an engine call, retrying short rate-limit bursts with exponential backoff."""
+    from gralph import log as glog
+
+    attempt = 1
+    delay_s = 5
+    result = engine.run_sync(prompt, cwd=cwd)
+    while attempt < max_attempts and _looks_like_rate_limit_error(result.error):
+        attempt += 1
+        glog.warn(
+            f"{cfg.ai_engine} reported rate limit during {stage}. Retrying in {delay_s}s "
+            f"(attempt {attempt}/{max_attempts})…"
+        )
+        time.sleep(delay_s)
+        delay_s = min(delay_s * 2, 30)
+        result = engine.run_sync(prompt, cwd=cwd)
+
+    return result
+
+
+def _looks_like_rate_limit_error(msg: str) -> bool:
+    if not msg:
+        return False
+    lower = msg.lower()
+    patterns = [
+        "rate limit",
+        "rate_limit",
+        "you've hit your limit",
+        "quota",
+        "429",
+        "too many requests",
+    ]
+    return any(p in lower for p in patterns)
+
+
+def _looks_like_prd_text(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.lstrip()
+    if stripped.startswith("# PRD:"):
+        return True
+    head = "\n".join(stripped.splitlines()[:8]).lower()
+    return "prd-id:" in head
 
 
 def _find_prd_skill(engine_name: str) -> Path | None:

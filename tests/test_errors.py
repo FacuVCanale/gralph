@@ -92,6 +92,13 @@ class TestEngineCheckErrors:
         raw = '{"type":"error","error":{"message":"Something went wrong"}}'
         assert "Something went wrong" in EngineBase._check_errors(raw)
 
+    def test_does_not_false_positive_on_error_string_inside_text_payload(self):
+        raw = (
+            '{"type":"item.completed","item":{"type":"agent_message",'
+            '"text":"Ejemplo: {\\\\\\"error\\\\\\":\\\\\\"rate_limit\\\\\\"}"}}'
+        )
+        assert EngineBase._check_errors(raw) == ""
+
 
 # ── Log extraction ──────────────────────────────────────────────────────────
 

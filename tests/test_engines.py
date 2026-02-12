@@ -239,6 +239,62 @@ class TestCodexEngine:
         result = engine.parse_output("Task completed successfully.\n")
         assert result.text == "Task completed"
 
+    def test_parse_output_extracts_agent_message_from_json_events(self) -> None:
+        engine = CodexEngine()
+        raw = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"abc"}',
+                '{"type":"item.completed","item":{"type":"reasoning","text":"internal"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"1. Question A\\n2. Question B"}}',
+            ]
+        )
+        result = engine.parse_output(raw)
+
+        assert result.text == "1. Question A\n2. Question B"
+
+    def test_parse_output_extracts_agent_message_from_content_array(self) -> None:
+        engine = CodexEngine()
+        raw = (
+            '{"type":"item.completed","item":{"type":"agent_message","content":'
+            '[{"type":"output_text","text":"Hello "},{"type":"output_text","text":"world"}]}}'
+        )
+        result = engine.parse_output(raw)
+
+        assert result.text == "Hello world"
+
+    def test_run_sync_does_not_false_positive_rate_limit_from_payload_text(self) -> None:
+        engine = CodexEngine()
+        done = subprocess.CompletedProcess(
+            args=["codex"],
+            returncode=0,
+            stdout=(
+                '{"type":"item.completed","item":{"type":"agent_message",'
+                '"text":"Ejemplo: {\\\\\\"error\\\\\\":\\\\\\"rate_limit\\\\\\"}"}}'
+            ),
+            stderr="",
+        )
+        with patch("gralph.engines.codex.subprocess.run", return_value=done):
+            result = engine.run_sync("prompt")
+
+        assert result.error == ""
+        assert "Ejemplo:" in result.text
+
+    def test_run_sync_does_not_use_base_error_scanner_for_codex(self) -> None:
+        engine = CodexEngine()
+        done = subprocess.CompletedProcess(
+            args=["codex"],
+            returncode=0,
+            stdout='{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}',
+            stderr="",
+        )
+        with patch("gralph.engines.codex.subprocess.run", return_value=done), patch.object(
+            CodexEngine, "_check_errors", return_value="Rate limit exceeded"
+        ):
+            result = engine.run_sync("prompt")
+
+        assert result.error == ""
+        assert result.text == "ok"
+
     def test_check_available_reports_missing_binary(self) -> None:
         with patch("gralph.engines.codex.shutil.which", return_value=None):
             engine = CodexEngine()
