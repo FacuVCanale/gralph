@@ -12,6 +12,8 @@ VERSION = "4.0.0"
 
 DEFAULT_SKILLS_URL = "https://raw.githubusercontent.com/frizynn/central-ralph/main/skills"
 
+DEFAULT_PROVIDERS: tuple[str, ...] = ("claude", "opencode", "codex", "cursor", "gemini")
+
 
 @dataclass
 class Config:
@@ -20,6 +22,7 @@ class Config:
     # AI engine
     ai_engine: str = "claude"
     opencode_model: str = "opencode/minimax-m2.1-free"
+    providers: list[str] = field(default_factory=lambda: list(DEFAULT_PROVIDERS))
 
     # Workflow
     skip_tests: bool = False
