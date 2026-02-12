@@ -420,16 +420,43 @@ def _run_engine_with_rate_limit_retry(
 
     attempt = 1
     delay_s = 5
-    result = engine.run_sync(prompt, cwd=cwd)
+    try:
+        result = engine.run_sync(prompt, cwd=cwd)
+    except KeyboardInterrupt:
+        glog.warn(f"Interrupted by user during {stage}.")
+        raise click.Abort() from None
+
+    if _looks_like_user_interrupt_result(result):
+        glog.warn(f"Interrupted by user during {stage}.")
+        raise click.Abort()
+
     while attempt < max_attempts and _looks_like_rate_limit_error(result.error):
+        if result.return_code == 0 and _has_meaningful_engine_text(result.text):
+            glog.warn(
+                f"{cfg.ai_engine} reported a rate-limit-like message during {stage}, "
+                "but returned usable output. Skipping retry."
+            )
+            break
         attempt += 1
         glog.warn(
             f"{cfg.ai_engine} reported rate limit during {stage}. Retrying in {delay_s}s "
-            f"(attempt {attempt}/{max_attempts})…"
+            f"(attempt {attempt}/{max_attempts})..."
         )
-        time.sleep(delay_s)
+        try:
+            time.sleep(delay_s)
+        except KeyboardInterrupt:
+            glog.warn(f"Interrupted by user during {stage}.")
+            raise click.Abort() from None
         delay_s = min(delay_s * 2, 30)
-        result = engine.run_sync(prompt, cwd=cwd)
+        try:
+            result = engine.run_sync(prompt, cwd=cwd)
+        except KeyboardInterrupt:
+            glog.warn(f"Interrupted by user during {stage}.")
+            raise click.Abort() from None
+
+        if _looks_like_user_interrupt_result(result):
+            glog.warn(f"Interrupted by user during {stage}.")
+            raise click.Abort()
 
     return result
 
@@ -447,6 +474,30 @@ def _looks_like_rate_limit_error(msg: str) -> bool:
         "too many requests",
     ]
     return any(p in lower for p in patterns)
+
+
+def _has_meaningful_engine_text(text: str) -> bool:
+    stripped = (text or "").strip()
+    return bool(stripped and stripped != "Task completed")
+
+
+def _looks_like_user_interrupt_result(result: "EngineResult") -> bool:
+    interrupt_codes = {130, -130, -1073741510, 3221225786}
+    if result.return_code in interrupt_codes:
+        return True
+
+    msg = " ".join(
+        p for p in [result.error or "", result.text or ""] if p
+    ).lower()
+    patterns = [
+        "keyboardinterrupt",
+        "interrupted by user",
+        "operation canceled",
+        "operation cancelled",
+        "sigint",
+        "ctrl-c",
+    ]
+    return any(p in msg for p in patterns)
 
 
 def _looks_like_prd_text(text: str) -> bool:
@@ -818,3 +869,4 @@ def _show_banner(cfg: Config) -> None:
         glog.console.print(f"Mode: [yellow]{' '.join(parts)}[/yellow]")
 
     glog.console.print("[bold]============================================[/bold]")
+

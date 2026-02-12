@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 
 # Import the CLI main so we can invoke it with Click's CliRunner
@@ -529,6 +530,93 @@ class TestCliPrdSubcommand:
         assert final_path.is_file()
         assert "prd-id: retry-test" in read_text(final_path)
         assert mock_engine.run_sync.call_count == 2
+
+    def test_prd_single_skips_retry_when_output_is_usable(self, tmp_path: Path):
+        """Do not retry on rate-limit-like errors when engine already returned valid output."""
+        from gralph.cli import _run_prd_single
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        write_path = tasks_dir / "prd-temp.md"
+
+        mock_engine = MagicMock()
+        mock_engine.run_sync.return_value = EngineResult(
+            error="Rate limit exceeded",
+            return_code=0,
+            text="# PRD: Usable Output\n\nprd-id: usable-output\n\nBody.\n",
+        )
+
+        cfg = Config(ai_engine="claude", verbose=False)
+        with patch("gralph.cli.time.sleep", return_value=None) as mock_sleep:
+            _run_prd_single(
+                cfg,
+                mock_engine,
+                tmp_path,
+                "provider fallback",
+                str(write_path),
+                "",  # output_path: use default naming
+                tasks_dir,
+                write_path,
+            )
+
+        final_path = tasks_dir / "prd-usable-output.md"
+        assert final_path.is_file()
+        assert "prd-id: usable-output" in read_text(final_path)
+        assert mock_engine.run_sync.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_prd_single_ctrl_c_during_retry_sleep_aborts(self, tmp_path: Path):
+        """Ctrl-C during retry wait should abort immediately."""
+        from gralph.cli import _run_prd_single
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        write_path = tasks_dir / "prd-temp.md"
+
+        mock_engine = MagicMock()
+        mock_engine.run_sync.return_value = EngineResult(error="Rate limit exceeded")
+
+        cfg = Config(ai_engine="claude", verbose=False)
+        with patch("gralph.cli.time.sleep", side_effect=KeyboardInterrupt):
+            with pytest.raises(click.Abort):
+                _run_prd_single(
+                    cfg,
+                    mock_engine,
+                    tmp_path,
+                    "provider fallback",
+                    str(write_path),
+                    "",
+                    tasks_dir,
+                    write_path,
+                )
+
+    def test_prd_single_interrupt_return_code_aborts(self, tmp_path: Path):
+        """If provider exits due Ctrl-C, treat it as user abort and stop."""
+        from gralph.cli import _run_prd_single
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        write_path = tasks_dir / "prd-temp.md"
+
+        mock_engine = MagicMock()
+        mock_engine.run_sync.return_value = EngineResult(
+            error="",
+            text="",
+            return_code=130,
+        )
+
+        cfg = Config(ai_engine="claude", verbose=False)
+        with pytest.raises(click.Abort):
+            _run_prd_single(
+                cfg,
+                mock_engine,
+                tmp_path,
+                "provider fallback",
+                str(write_path),
+                "",
+                tasks_dir,
+                write_path,
+            )
 
 
 # ── PS1 aliases (optional, if we want to assert they're rewritten) ───────
