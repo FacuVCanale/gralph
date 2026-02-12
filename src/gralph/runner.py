@@ -65,6 +65,7 @@ CRITICAL RULES:
 - Do NOT modify tasks.yaml.
 - Do NOT mark the task as complete in tasks.yaml.
 - Do NOT just update progress.txt. You MUST write the actual code.
+- Do NOT commit tasks.yaml or progress.txt.
 - If the file does not exist, CREATE IT.
 
 Focus only on implementing: {task_title}"""

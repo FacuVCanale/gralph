@@ -6,6 +6,8 @@
 # GRALPH runtime artifacts
 tasks/
 artifacts/
+/progress.txt
+/tasks.yaml
 
 # Python
 __pycache__/
