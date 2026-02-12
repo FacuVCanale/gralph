@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import copy
 import signal
 import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from gralph import log
 from gralph.config import Config
 from gralph.engines.base import EngineBase
+from gralph.engines.registry import get_engine
 from gralph.git_ops import (
     add_and_commit,
     changed_files,
@@ -45,6 +48,8 @@ class AgentSlot:
     output_file: Path
     log_file: Path
     stream_file: Path
+    provider: str = ""
+    engine: EngineBase | None = None
     started_at: float = field(default_factory=time.monotonic)
     last_activity: float = field(default_factory=time.monotonic)
 
@@ -265,6 +270,10 @@ class Runner:
         self.tf = tf
         self.engine = engine
         self.sched = scheduler
+        self.providers: list[str] = self._normalize_providers(cfg.providers, cfg.ai_engine)
+        self.task_providers: dict[str, str] = {}
+        self._provider_index = 0
+        self._engine_factory = self._make_engine_factory(engine)
         self.iteration = 0
         self.agent_num = 0
         self.active: list[AgentSlot] = []
@@ -277,6 +286,42 @@ class Runner:
         self._orig_signal_handlers: dict[int, object] = {}
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
+
+    @staticmethod
+    def _normalize_providers(providers: list[str], fallback_provider: str) -> list[str]:
+        """Return a non-empty provider list, preserving order."""
+        normalized = [p.strip().lower() for p in providers if p and p.strip()]
+        if normalized:
+            return normalized
+        return [fallback_provider.strip().lower()]
+
+    def _make_engine_factory(self, seed_engine: EngineBase) -> Callable[[str], EngineBase]:
+        """Create task-scoped engines while keeping test doubles easy to inject."""
+        if seed_engine.__class__.__module__.startswith("gralph.engines."):
+            return lambda provider: get_engine(provider, opencode_model=self.cfg.opencode_model)
+
+        def _clone_engine(_provider: str) -> EngineBase:
+            try:
+                return copy.deepcopy(seed_engine)
+            except Exception:
+                return seed_engine
+
+        return _clone_engine
+
+    def _provider_for_task(self, task_id: str) -> str:
+        """Assign a provider once per task using round-robin order."""
+        assigned = self.task_providers.get(task_id)
+        if assigned:
+            return assigned
+
+        provider = self.providers[self._provider_index % len(self.providers)]
+        self._provider_index += 1
+        self.task_providers[task_id] = provider
+        return provider
+
+    def _task_engine_for_provider(self, provider: str) -> EngineBase:
+        """Build a fresh engine instance for a task launch."""
+        return self._engine_factory(provider)
 
     def run(self) -> bool:
         """Execute all tasks. Returns ``True`` on success."""
@@ -447,10 +492,24 @@ class Runner:
         task = self.tf.get_task(task_id)
         title = task.title if task else task_id
         touches = ", ".join(task.touches) if task else ""
+        provider = self._provider_for_task(task_id)
+
+        try:
+            task_engine = self._task_engine_for_provider(provider)
+        except Exception as e:
+            log.error(f"Failed to create engine '{provider}' for {task_id}: {e}")
+            self.sched.fail_task(task_id)
+            return
+
+        availability_error = task_engine.check_available()
+        if availability_error:
+            log.error(f"Provider '{provider}' unavailable for {task_id}: {availability_error}")
+            self.sched.fail_task(task_id)
+            return
 
         log.console.print(
             f"  [cyan]*[/cyan] Agent {self.agent_num}: "
-            f"{title[:40]} ({task_id})"
+            f"{title[:40]} ({task_id}) [{provider}]"
         )
 
         # Create temp files for IPC
@@ -488,12 +547,27 @@ class Runner:
         write_text(status_file, "running")
 
         # Launch engine async
-        proc = self.engine.run_async(
-            prompt,
-            cwd=wt_dir,
-            stdout_file=stream_file,
-            stderr_file=log_file,
-        )
+        try:
+            proc = task_engine.run_async(
+                prompt,
+                cwd=wt_dir,
+                stdout_file=stream_file,
+                stderr_file=log_file,
+            )
+        except OSError as e:
+            log.error(f"Failed to start provider '{provider}' for {task_id}: {e}")
+            write_text(status_file, "failed")
+            write_text(output_file, "0 0")
+            self.sched.fail_task(task_id)
+            cleanup_agent_worktree(
+                wt_dir,
+                branch_name,
+                original_dir=original_dir,
+                log_file=log_file,
+            )
+            for f in [status_file, output_file, log_file, stream_file]:
+                f.unlink(missing_ok=True)
+            return
 
         self.active.append(
             AgentSlot(
@@ -506,6 +580,8 @@ class Runner:
                 output_file=output_file,
                 log_file=log_file,
                 stream_file=stream_file,
+                provider=provider,
+                engine=task_engine,
             )
         )
 
@@ -543,7 +619,7 @@ class Runner:
         title = task.title if task else slot.task_id
 
         # Accumulate token usage from engine output
-        self._accumulate_tokens(slot.stream_file)
+        self._accumulate_tokens(slot.stream_file, slot.engine or self.engine)
 
         # Persist log
         self._persist_log(slot.task_id, slot.log_file, slot.stream_file, original_dir)
@@ -800,13 +876,13 @@ class Runner:
             return False
         return _is_external_failure(err_msg)
 
-    def _accumulate_tokens(self, stream_file: Path) -> None:
+    def _accumulate_tokens(self, stream_file: Path, engine: EngineBase) -> None:
         """Parse engine output from *stream_file* and accumulate token counts."""
         if not stream_file.is_file():
             return
         raw = read_text(stream_file, errors="replace")
         if not raw:
             return
-        result = self.engine.parse_output(raw)
+        result = engine.parse_output(raw)
         self.total_input_tokens += result.input_tokens
         self.total_output_tokens += result.output_tokens
