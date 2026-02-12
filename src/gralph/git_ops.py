@@ -56,6 +56,11 @@ def merge_no_edit(branch: str, cwd: Path | None = None) -> bool:
     return r.returncode == 0
 
 
+def merge_no_edit_result(branch: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run merge and return the raw completed-process for error inspection."""
+    return _git("merge", "--no-edit", branch, cwd=cwd)
+
+
 def merge_abort(cwd: Path | None = None) -> None:
     _git("merge", "--abort", cwd=cwd)
 
@@ -92,6 +97,19 @@ def diff_stat(base: str, head: str, cwd: Path | None = None) -> str:
 def has_dirty_worktree(cwd: Path | None = None) -> bool:
     r = _git("status", "--porcelain", cwd=cwd)
     return bool(r.stdout.strip())
+
+
+def dirty_worktree_entries(cwd: Path | None = None) -> list[str]:
+    """Return concise dirty entries from `git status --porcelain`."""
+    r = _git("status", "--porcelain", cwd=cwd)
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    entries: list[str] = []
+    for line in r.stdout.splitlines():
+        stripped = line.strip()
+        if stripped:
+            entries.append(stripped)
+    return entries
 
 
 def stash_push(cwd: Path | None = None) -> bool:

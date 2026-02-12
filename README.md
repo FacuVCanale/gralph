@@ -120,9 +120,11 @@ gralph --stalled-timeout 900 --external-fail-timeout 600
 | `--claude` | Use Claude Code (default) |
 | `--opencode` | Use OpenCode |
 | `--cursor` | Use Cursor agent |
-| `--codex` | Use Codex CLI |
+| `--codex` | Use Codex CLI (default uses full write access for autonomous runs) |
 | `--gemini` | Use Gemini CLI |
 | `--opencode-model MODEL` | Override OpenCode model (default: `opencode/minimax-m2.1-free`) |
+
+For Codex, GRALPH defaults to `--dangerously-bypass-approvals-and-sandbox` so agents can edit files reliably in worktrees. Set `GRALPH_CODEX_SAFE=1` (or `GRALPH_CODEX_DANGEROUS=0`) to force sandboxed mode.
 
 ### Execution
 
