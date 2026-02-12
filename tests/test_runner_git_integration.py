@@ -157,32 +157,33 @@ class TestRunnerSuccessFlow:
         assert scheduler.state("A") == TaskState.DONE
         # The autocommit should have committed the dirty file
 
-    def test_success_reverts_tasks_yaml_changes(self, git_repo: Path) -> None:
-        """When an agent modifies tasks.yaml, _handle_success tries to revert it.
-
-        The revert logic (git reset HEAD + git checkout --) only works on
-        uncommitted changes. If auto-commit already baked tasks.yaml into
-        history, the revert becomes a no-op. This test verifies that the runner
-        still calls the revert commands without crashing.
-        """
+    def test_success_sanitizes_committed_runtime_files(self, git_repo: Path) -> None:
+        """Committed runtime files from agent branches are stripped before merge."""
         runner, scheduler = _make_runner(git_repo)
         scheduler.start_task("A")
         slot = _make_successful_slot(runner, git_repo, "A")
 
-        # Agent leaves tasks.yaml as an uncommitted modification
+        before_tasks = read_text(git_repo / "tasks.yaml")
         write_text(slot.worktree_dir / "tasks.yaml", "modified by agent")
+        write_text(slot.worktree_dir / "progress.txt", "runtime noise")
+        subprocess.run(
+            ["git", "add", "tasks.yaml", "progress.txt"],
+            cwd=slot.worktree_dir,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "noise files"],
+            cwd=slot.worktree_dir,
+            capture_output=True,
+            check=True,
+        )
 
-        # The auto-commit in _handle_success will commit tasks.yaml along with
-        # other dirty files, then the revert commands are effectively no-ops.
-        # Whether the merge succeeds depends on whether main also has a
-        # conflicting tasks.yaml. Since _make_runner writes tasks.yaml on main,
-        # this will conflict. We verify the runner handles it gracefully.
         runner._handle_finished(slot, git_repo)
 
-        # With a conflicting tasks.yaml the merge fails, so we just verify
-        # it was handled without exceptions and the task was marked appropriately.
-        state = scheduler.state("A")
-        assert state in (TaskState.DONE, TaskState.FAILED)
+        assert scheduler.state("A") == TaskState.DONE
+        assert read_text(git_repo / "tasks.yaml") == before_tasks
+        assert not (git_repo / "progress.txt").exists()
 
 
 # ── TestRunnerMergeFailureFlow ───────────────────────────────────────

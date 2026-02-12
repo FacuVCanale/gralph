@@ -116,6 +116,45 @@ def _meaningful_changes(base: str, cwd: Path) -> bool:
     return False
 
 
+_FORBIDDEN_TASK_FILES = {"tasks.yaml", "progress.txt"}
+
+
+def _sanitize_forbidden_task_files(base: str, cwd: Path) -> list[str]:
+    """Revert forbidden runtime files in a task branch before merge.
+
+    Agents sometimes commit local runtime bookkeeping files (``tasks.yaml``,
+    ``progress.txt``). These must not be merged into the run branch.
+    Returns the list of sanitized paths.
+    """
+    changed = changed_files(base, cwd=cwd)
+    offenders = [f for f in changed if Path(f).as_posix() in _FORBIDDEN_TASK_FILES]
+    if not offenders:
+        return []
+
+    for rel in offenders:
+        abs_path = cwd / rel
+        # If the file exists on base, restore that exact version.
+        show = subprocess.run(
+            ["git", "show", f"{base}:{rel}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if show.returncode == 0:
+            subprocess.run(["git", "checkout", base, "--", rel], cwd=cwd, capture_output=True)
+            continue
+
+        # Otherwise it was introduced by the task branch; remove it.
+        if abs_path.exists():
+            abs_path.unlink(missing_ok=True)
+        subprocess.run(["git", "rm", "-f", "--ignore-unmatch", rel], cwd=cwd, capture_output=True)
+
+    if has_dirty_worktree(cwd=cwd):
+        add_and_commit("chore(gralph): sanitize forbidden task files", cwd=cwd)
+
+    return offenders
+
+
 class Runner:
     """Orchestrates DAG-aware parallel/sequential task execution."""
 
@@ -140,6 +179,8 @@ class Runner:
         self._stop_requested = False
         self._interrupt_count = 0
         self._orig_signal_handlers: dict[int, object] = {}
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
 
     def run(self) -> bool:
         """Execute all tasks. Returns ``True`` on success."""
@@ -405,6 +446,9 @@ class Runner:
         task = self.tf.get_task(slot.task_id)
         title = task.title if task else slot.task_id
 
+        # Accumulate token usage from engine output
+        self._accumulate_tokens(slot.stream_file)
+
         # Persist log
         self._persist_log(slot.task_id, slot.log_file, slot.stream_file, original_dir)
 
@@ -439,17 +483,9 @@ class Runner:
         if has_dirty_worktree(cwd=slot.worktree_dir):
             add_and_commit("Auto-commit remaining changes", cwd=slot.worktree_dir)
 
-        # Revert tasks.yaml if modified
-        tasks_yaml = slot.worktree_dir / "tasks.yaml"
-        if tasks_yaml.is_file():
-            subprocess.run(
-                ["git", "reset", "HEAD", "tasks.yaml"],
-                cwd=slot.worktree_dir, capture_output=True,
-            )
-            subprocess.run(
-                ["git", "checkout", "--", "tasks.yaml"],
-                cwd=slot.worktree_dir, capture_output=True,
-            )
+        sanitized = _sanitize_forbidden_task_files(self.cfg.base_branch, slot.worktree_dir)
+        if sanitized:
+            log.warn(f"Sanitized forbidden files from task branch: {', '.join(sanitized)}")
 
         # Merge or create PR
         merge_ok = True
@@ -646,3 +682,14 @@ class Runner:
         if retries_used >= self.cfg.max_retries:
             return False
         return _is_external_failure(err_msg)
+
+    def _accumulate_tokens(self, stream_file: Path) -> None:
+        """Parse engine output from *stream_file* and accumulate token counts."""
+        if not stream_file.is_file():
+            return
+        raw = read_text(stream_file, errors="replace")
+        if not raw:
+            return
+        result = self.engine.parse_output(raw)
+        self.total_input_tokens += result.input_tokens
+        self.total_output_tokens += result.output_tokens

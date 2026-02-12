@@ -71,7 +71,10 @@ class _PipelineEngine(EngineBase):
         return EngineResult(text="ok")
 
 
-@pytest.mark.parametrize("provider_flag", ["--claude", "--opencode", "--codex", "--cursor"])
+@pytest.mark.parametrize(
+    "provider_flag",
+    ["--claude", "--opencode", "--codex", "--cursor", "--gemini"],
+)
 def test_pipeline_runs_end_to_end_for_each_provider(cli_runner, tmp_path: Path, provider_flag: str):
     prd_content = "# PRD: Provider Matrix\nprd-id: provider-matrix\n\nBody.\n"
     write_text(tmp_path / "PRD.md", prd_content)
@@ -114,7 +117,10 @@ def test_pipeline_runs_end_to_end_for_each_provider(cli_runner, tmp_path: Path, 
     assert progress_files, "expected at least one progress.txt"
 
 
-@pytest.mark.parametrize("provider_flag", ["--claude", "--opencode", "--codex", "--cursor"])
+@pytest.mark.parametrize(
+    "provider_flag",
+    ["--claude", "--opencode", "--codex", "--cursor", "--gemini"],
+)
 def test_pipeline_writes_tasks_yaml_from_stdout_fallback(cli_runner, tmp_path: Path, provider_flag: str):
     prd_content = "# PRD: Provider Matrix Fallback\nprd-id: provider-matrix-fallback\n\nBody.\n"
     write_text(tmp_path / "PRD.md", prd_content)

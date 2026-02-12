@@ -84,6 +84,10 @@ class TestCliEngineFlags:
         r = cli_runner.invoke(main, ["--cursor", "--help"])
         assert r.exit_code == 0
 
+    def test_gemini_help(self, cli_runner):
+        r = cli_runner.invoke(main, ["--gemini", "--help"])
+        assert r.exit_code == 0
+
 
 # ── Option flags (parse correctly) ───────────────────────────────────────
 

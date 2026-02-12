@@ -51,6 +51,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option("--opencode", "engine", flag_value="opencode", help="Use OpenCode")
 @click.option("--codex", "engine", flag_value="codex", help="Use Codex CLI")
 @click.option("--cursor", "engine", flag_value="cursor", help="Use Cursor agent")
+@click.option("--gemini", "engine", flag_value="gemini", help="Use Gemini CLI")
 @click.option("--agent", "engine", flag_value="cursor", hidden=True)
 @click.option("--opencode-model", default="", help="OpenCode model override")
 @click.option("--no-tests", is_flag=True, help="Skip tests")
@@ -407,6 +408,11 @@ def _find_prd_skill(engine_name: str) -> Path | None:
                 repo / ".cursor/rules/prd.mdc",
                 repo / ".cursor/commands/prd.md",
             ]
+        case "gemini":
+            candidates = [
+                repo / ".gemini/skills/prd/SKILL.md",
+                home / ".gemini/skills/prd/SKILL.md",
+            ]
 
     # Also check the bundled skills dir
     candidates.append(repo / "skills/prd/SKILL.md")
@@ -576,7 +582,13 @@ def _run_pipeline(cfg: Config) -> None:
         notify_error("GRALPH stopped due to external failure or deadlock")
         sys.exit(1)
 
-    show_summary(cfg, runner.iteration, branches=runner.completed_branches)
+    show_summary(
+        cfg,
+        runner.iteration,
+        total_input_tokens=runner.total_input_tokens,
+        total_output_tokens=runner.total_output_tokens,
+        branches=runner.completed_branches,
+    )
     notify_done()
 
 
@@ -692,6 +704,7 @@ def _show_banner(cfg: Config) -> None:
         "cursor": "[yellow]Cursor Agent[/yellow]",
         "codex": "[blue]Codex[/blue]",
         "claude": "[magenta]Claude Code[/magenta]",
+        "gemini": "[green]Gemini CLI[/green]",
     }.get(cfg.ai_engine, cfg.ai_engine)
 
     glog.console.print("[bold]============================================[/bold]")

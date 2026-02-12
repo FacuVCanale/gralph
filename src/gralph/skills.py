@@ -48,6 +48,11 @@ def _skill_candidates(engine: str, skill: str) -> list[Path]:
                 repo_root / f".cursor/rules/{skill}.mdc",
                 repo_root / f".cursor/commands/{skill}.md",
             ]
+        case "gemini":
+            return [
+                repo_root / f".gemini/skills/{skill}/SKILL.md",
+                home / f".gemini/skills/{skill}/SKILL.md",
+            ]
         case _:
             return []
 
@@ -72,6 +77,9 @@ def _skill_install_target(engine: str, skill: str) -> Path | None:
             user = home / f".config/opencode/skill/{skill}/SKILL.md"
         case "cursor":
             project = repo_root / f".cursor/rules/{skill}.mdc"
+        case "gemini":
+            project = repo_root / f".gemini/skills/{skill}/SKILL.md"
+            user = home / f".gemini/skills/{skill}/SKILL.md"
 
     for candidate in [project, user]:
         if candidate is not None:
