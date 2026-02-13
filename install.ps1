@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
 # ============================================
 # GRALPH Installer (Windows)
-# Usage: irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.ps1 | iex
 # ============================================
 
 $ErrorActionPreference = "Continue"
 
-$REPO = "https://github.com/frizynn/gralph.git"
+$REPO = "https://github.com/FacuVCanale/gralph.git"
 $INSTALL_DIR = Join-Path $HOME ".gralph"
 $MIN_PYTHON = "3.10"
 

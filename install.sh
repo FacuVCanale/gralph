@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================
 # GRALPH Installer (macOS / Linux)
-# Usage: curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.sh | bash
 # ============================================
 
 set -euo pipefail
 
-REPO="https://github.com/frizynn/gralph.git"
+REPO="https://github.com/FacuVCanale/gralph.git"
 INSTALL_DIR="$HOME/.gralph"
 MIN_PYTHON="3.10"
 

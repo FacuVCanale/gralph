@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "frizynn" },
+    { name = "FacuVCanale" },
 ]
 keywords = ["ai", "automation", "coding", "agent", "parallel"]
 classifiers = [
@@ -43,8 +43,8 @@ dev = [
 gralph = "gralph.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/frizynn/gralph"
-Repository = "https://github.com/frizynn/gralph"
+Homepage = "https://github.com/FacuVCanale/gralph"
+Repository = "https://github.com/FacuVCanale/gralph"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gralph"]

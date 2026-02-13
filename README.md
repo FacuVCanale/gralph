@@ -24,13 +24,13 @@ GRALPH reads a PRD, generates tasks with dependencies, and runs multiple agents 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/frizynn/gralph/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/frizynn/gralph/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/FacuVCanale/gralph/main/install.ps1 | iex
 ```
 
 The installer clones gralph and installs it as a Python CLI via [pipx](https://pipx.pypa.io/). Restart your terminal after installing.
