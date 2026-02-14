@@ -162,19 +162,45 @@ def create_agent_worktree(
     Returns ``(worktree_dir, branch_name)``.
     Raises ``RuntimeError`` on failure.
     """
-    branch_name = f"gralph/agent-{agent_num}-{slugify(task_id)}"
+    branch_base = f"gralph/agent-{agent_num}-{slugify(task_id)}"
+    branch_name = branch_base
     worktree_dir = worktree_base / f"agent-{agent_num}"
 
     # Prune stale worktrees
     worktree_prune(cwd=original_dir)
 
-    # Delete branch if it exists
-    delete_branch(branch_name, force=True, cwd=original_dir)
+    # Try to create a clean branch for this task. If a stale checked-out branch
+    # blocks deletion/recreation, fall back to a suffixed branch name.
+    max_candidates = 25
+    branch_error = ""
+    for idx in range(max_candidates):
+        candidate = branch_base if idx == 0 else f"{branch_base}-r{idx + 1}"
+        delete_branch(candidate, force=True, cwd=original_dir)
+        r = _git("branch", candidate, base_branch, cwd=original_dir)
+        if r.returncode == 0:
+            branch_name = candidate
+            break
 
-    # Create branch from base
-    r = _git("branch", branch_name, base_branch, cwd=original_dir)
-    if r.returncode != 0:
-        raise RuntimeError(f"Failed to create branch {branch_name} from {base_branch}: {r.stderr}")
+        stderr = (r.stderr or "").strip()
+        stdout = (r.stdout or "").strip()
+        branch_error = stderr or stdout
+        lower = branch_error.lower()
+
+        collision_markers = (
+            "already exists",
+            "checked out at",
+            "cannot force update the branch",
+        )
+        if any(marker in lower for marker in collision_markers):
+            continue
+
+        raise RuntimeError(
+            f"Failed to create branch {candidate} from {base_branch}: {branch_error}"
+        )
+    else:
+        raise RuntimeError(
+            f"Failed to create branch {branch_base} from {base_branch}: {branch_error}"
+        )
 
     # Remove existing worktree dir
     import shutil

@@ -353,6 +353,7 @@ class TestCursorEngine:
 
         assert cmd[0] == "/usr/bin/agent"
         assert "stream-json" in cmd
+        assert cmd[-1] == "hello"
         assert "--model" not in cmd
 
     def test_build_cmd_fallback_to_agent_when_not_in_path(self) -> None:
@@ -362,6 +363,7 @@ class TestCursorEngine:
 
         assert cmd[0] == "agent"
         assert "stream-json" in cmd
+        assert cmd[-1] == "hello"
 
     def test_build_cmd_use_auto_adds_model_auto(self) -> None:
         with patch("gralph.engines.cursor.shutil.which", return_value=None):
@@ -371,6 +373,7 @@ class TestCursorEngine:
         assert cmd[0] == "agent"
         assert "--model" in cmd
         assert "auto" in cmd
+        assert cmd[-1] == "hello"
 
     def test_parse_output_falls_back_to_assistant_message(self) -> None:
         engine = CursorEngine()
@@ -399,6 +402,21 @@ class TestCursorEngine:
 
         assert result.error == "SyntaxError"
         assert mock_once.call_count == 1
+
+    def test_run_async_passes_prompt_argument_required_by_print_mode(self, tmp_path: Path) -> None:
+        engine = CursorEngine()
+        fake_proc = MagicMock()
+
+        with patch("gralph.engines.cursor.shutil.which", return_value=None), patch(
+            "gralph.engines.base.subprocess.Popen", return_value=fake_proc
+        ) as mock_popen:
+            proc = engine.run_async("prompt text", cwd=tmp_path)
+
+        assert proc is fake_proc
+        cmd = mock_popen.call_args.args[0]
+        assert cmd[0] == "agent"
+        assert "--print" in cmd
+        assert cmd[-1] == "prompt text"
 
     def test_check_available_reports_missing_binary(self) -> None:
         with patch("gralph.engines.cursor.shutil.which", return_value=None):

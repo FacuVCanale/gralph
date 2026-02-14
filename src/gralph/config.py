@@ -10,7 +10,7 @@ from pathlib import Path
 
 VERSION = "4.0.0"
 
-DEFAULT_SKILLS_URL = "https://raw.githubusercontent.com/FacuVCanale/central-ralph/main/skills"
+DEFAULT_SKILLS_URL = "https://raw.githubusercontent.com/FacuVCanale/gralph/main/skills"
 
 DEFAULT_PROVIDERS: tuple[str, ...] = ("claude", "opencode", "codex", "cursor", "gemini")
 

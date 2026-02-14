@@ -191,24 +191,39 @@ class TestRunnerSuccessFlow:
 
 
 class TestRunnerMergeFailureFlow:
-    def test_merge_conflict_aborts_and_fails_task(self, git_repo: Path) -> None:
+    def test_merge_conflict_retries_task_when_retries_available(self, git_repo: Path) -> None:
         runner, scheduler = _make_runner(git_repo)
         scheduler.start_task("A")
         slot = _make_successful_slot(runner, git_repo, "A")
 
         # Create a conflict: commit to main the same file the agent changed
-        base = git_ops.current_branch(cwd=git_repo)
         _commit_file(git_repo, "code.py", "conflicting content", "conflict on main")
 
         runner._handle_finished(slot, git_repo)
 
-        # Merge failed → task should be FAILED
-        assert scheduler.state("A") == TaskState.FAILED
+        assert scheduler.state("A") == TaskState.PENDING
+        assert runner.retry_counts.get("A") == 1
         # MERGE_HEAD should be gone (abort was called)
         assert not (git_repo / ".git" / "MERGE_HEAD").exists()
         report = json.loads(read_text(git_repo / "artifacts" / "test" / "reports" / "A.json"))
+        assert report["status"] == "retrying"
+        assert report["commits"] == 1
+
+    def test_merge_conflict_fails_when_retries_exhausted(self, git_repo: Path) -> None:
+        runner, scheduler = _make_runner(git_repo)
+        runner.cfg.max_retries = 0
+        scheduler.start_task("A")
+        slot = _make_successful_slot(runner, git_repo, "A")
+
+        _commit_file(git_repo, "code.py", "conflicting content", "conflict on main")
+
+        runner._handle_finished(slot, git_repo)
+
+        assert scheduler.state("A") == TaskState.FAILED
+        assert not (git_repo / ".git" / "MERGE_HEAD").exists()
+        report = json.loads(read_text(git_repo / "artifacts" / "test" / "reports" / "A.json"))
         assert report["status"] == "failed"
-        assert report["failureType"] == "internal"
+        assert report["failureType"] == "external"
 
     def test_merge_failure_does_not_delete_branch(self, git_repo: Path) -> None:
         runner, scheduler = _make_runner(git_repo)
@@ -356,6 +371,67 @@ class TestRunnerFailureFlow:
         runner._handle_finished(slot, git_repo)
 
         assert scheduler.state("A") == TaskState.FAILED
+
+    def test_no_commits_ignores_non_error_tool_event_when_building_error_message(
+        self,
+        git_repo: Path,
+    ) -> None:
+        runner, scheduler = _make_runner(git_repo)
+        scheduler.start_task("A")
+
+        base = git_ops.current_branch(cwd=git_repo)
+        wt_base = git_repo / "worktrees"
+        wt_base.mkdir(exist_ok=True)
+        wt_dir, branch = git_ops.create_agent_worktree(
+            "A",
+            1,
+            base_branch=base,
+            worktree_base=wt_base,
+            original_dir=git_repo,
+        )
+
+        proc = subprocess.Popen(
+            ["python", "-c", "pass"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        proc.wait()
+
+        import tempfile
+
+        status_file = Path(tempfile.mktemp(prefix="gralph-status-A-"))
+        output_file = Path(tempfile.mktemp(prefix="gralph-output-A-"))
+        log_file = Path(tempfile.mktemp(prefix="gralph-log-A-"))
+        stream_file = Path(tempfile.mktemp(prefix="gralph-stream-A-"))
+        write_text(status_file, "running")
+        write_text(log_file, "")
+        write_text(
+            stream_file,
+            (
+                '{"type":"tool_call","subtype":"completed","call_id":"tool_1",'
+                '"tool_call":{"editToolCall":{"args":{"path":"tests/server.test.ts",'
+                '"streamContent":"expect((JSON.parse(response.body) as { error: string }).error).toBe(\\"Unauthorized\\");"},'
+                '"result":{"success":{"path":"tests/server.test.ts"}}}}}\n'
+            ),
+        )
+
+        slot = AgentSlot(
+            task_id="A",
+            agent_num=1,
+            proc=proc,
+            worktree_dir=wt_dir,
+            branch_name=branch,
+            status_file=status_file,
+            output_file=output_file,
+            log_file=log_file,
+            stream_file=stream_file,
+        )
+
+        runner._handle_finished(slot, git_repo)
+
+        assert scheduler.state("A") == TaskState.FAILED
+        report = json.loads(read_text(git_repo / "artifacts" / "test" / "reports" / "A.json"))
+        assert report["errorMessage"] == "Agent exited without creating any commits"
 
     def test_no_meaningful_changes_treated_as_failure(self, git_repo: Path) -> None:
         runner, scheduler = _make_runner(git_repo)

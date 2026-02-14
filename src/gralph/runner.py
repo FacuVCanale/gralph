@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import platform
 import signal
 import shutil
 import subprocess
@@ -54,7 +55,25 @@ class AgentSlot:
     last_activity: float = field(default_factory=time.monotonic)
 
 
+def _task_shell_rules() -> str:
+    """Return shell usage guardrails for the current platform."""
+    if platform.system().lower().startswith("windows"):
+        return (
+            "SHELL COMPATIBILITY (Windows PowerShell):\n"
+            "- Do NOT use '&&' between commands; PowerShell 5 treats it as a syntax error.\n"
+            "- Use ';' between commands, or run commands separately.\n"
+            "- Prefer setting tool workingDirectory/cwd instead of chaining 'cd'.\n"
+            "- Before command sequences, set $ErrorActionPreference = 'Stop'.\n"
+        )
+    return (
+        "SHELL COMPATIBILITY:\n"
+        "- Use shell syntax compatible with the current platform.\n"
+        "- Prefer tool workingDirectory/cwd instead of chaining 'cd'.\n"
+    )
+
+
 def _build_task_prompt(task_id: str, task_title: str, touches: str) -> str:
+    shell_rules = _task_shell_rules()
     return f"""You are working on a specific task. Focus ONLY on this task:
 
 TASK ID: {task_id}
@@ -66,6 +85,8 @@ Instructions:
 2. Write tests if appropriate.
 3. Update progress.txt with what you did.
 4. Commit your changes with a descriptive message.
+
+{shell_rules}
 
 CRITICAL RULES:
 - Do NOT modify tasks.yaml.
@@ -81,15 +102,32 @@ def _is_external_failure(msg: str) -> bool:
     """Heuristic: detect external/infra/toolchain failures."""
     if not msg:
         return False
+    if _is_merge_conflict_failure(msg):
+        return True
     lower = msg.lower()
     patterns = [
         "buninstallfailederror", "command not found", "enoent", "eacces",
+        "commandnotfoundexception", "objectnotfound:",
         "permission denied", "network", "timeout", "tls", "econnreset",
         "etimedout", "lockfile", "install", "certificate", "ssl",
         "rate limit", "quota", "429", "too many requests", "hit your limit", "stalled",
         "blocked by policy", "read-only sandbox", "approval_policy",
     ]
     return any(p in lower for p in patterns)
+
+
+def _is_merge_conflict_failure(msg: str) -> bool:
+    """True when a git merge failed due to textual conflicts."""
+    if not msg:
+        return False
+    lower = msg.lower()
+    markers = [
+        "automatic merge failed",
+        "conflict (content)",
+        "conflict in ",
+        "merge conflict",
+    ]
+    return any(marker in lower for marker in markers)
 
 
 def _extract_policy_block_detail_from_stream(stream: str) -> str:
@@ -175,6 +213,63 @@ def _extract_rate_limit_detail_from_stream(stream: str) -> str:
     return ""
 
 
+def _extract_structured_error_line(stripped: str) -> tuple[str, bool]:
+    """Extract an error message from one stream line.
+
+    Returns ``(error_message, is_structured_json)``.
+    """
+    if not stripped:
+        return "", False
+
+    import json
+
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return "", False
+
+    if not isinstance(obj, dict):
+        return "", True
+
+    event_type = str(obj.get("type", "")).lower()
+    if event_type == "result":
+        is_error = obj.get("is_error")
+        if is_error is False:
+            return "", True
+        if is_error is True:
+            result_text = obj.get("result")
+            if isinstance(result_text, str) and result_text.strip():
+                return result_text.strip(), True
+
+    err = obj.get("error")
+    if isinstance(err, dict):
+        msg = str(err.get("message", "")).strip()
+        if msg:
+            return msg, True
+    elif isinstance(err, str) and err.strip():
+        return err.strip(), True
+
+    item = obj.get("item")
+    if isinstance(item, dict) and str(item.get("type", "")).lower() == "error":
+        text = str(item.get("text", "")).strip()
+        if text:
+            return text, True
+        msg = str(item.get("message", "")).strip()
+        if msg:
+            return msg, True
+
+    if event_type == "error":
+        msg = str(obj.get("message", "")).strip()
+        if msg:
+            return msg, True
+        text = str(obj.get("text", "")).strip()
+        if text:
+            return text, True
+        return "Unknown error", True
+
+    return "", True
+
+
 def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) -> str:
     """Get the most relevant error line from stderr or stdout logs."""
     if log_file.is_file():
@@ -199,11 +294,27 @@ def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) ->
         if rate_limit_detail:
             return rate_limit_detail
         for line in reversed(stream.splitlines()):
-            lower = line.lower()
+            stripped = line.strip()
+            if not stripped:
+                continue
+            lower = stripped.lower()
             if "blocked by policy" in lower:
                 return "Blocked by policy"
-            if "error" in lower or "exception" in lower or "traceback" in lower:
-                return line.strip()
+
+            structured_error, is_structured_json = _extract_structured_error_line(stripped)
+            if structured_error:
+                return structured_error
+
+            if "exception" in lower or "traceback" in lower:
+                return stripped
+
+            # Avoid false positives on non-error JSON events that merely include
+            # snippets like {"error": "..."} in tool payload text.
+            if is_structured_json:
+                continue
+
+            if lower.startswith("error") or " error:" in lower or '"error"' in lower:
+                return stripped
 
     return ""
 
@@ -739,34 +850,40 @@ class Runner:
             log.console.print(
                 f"  [green]OK[/green] {title[:45]} ({slot.task_id})"
             )
-        else:
-            self.sched.fail_task(slot.task_id)
-            log.console.print(
-                f"  [red]X[/red] {title[:45]} ({slot.task_id}) [Merge Failed]"
+            # Save report
+            retries_used = self.retry_counts.get(slot.task_id, 0)
+            self._save_report(
+                slot,
+                original_dir,
+                "done",
+                commits,
+                merge_error,
+                attempt=retries_used + 1,
+                retries=retries_used,
             )
 
-        # Save report
-        retries_used = self.retry_counts.get(slot.task_id, 0)
-        self._save_report(
+            # Cleanup worktree
+            cleanup_agent_worktree(
+                slot.worktree_dir,
+                slot.branch_name,
+                original_dir=original_dir,
+                log_file=slot.log_file,
+            )
+            if delete_merged_branch:
+                delete_branch(slot.branch_name, cwd=original_dir)
+                self.completed_branches.append(slot.branch_name)
+            return
+
+        # Merge conflicts can happen when parallel tasks touch overlapping files.
+        # Retry the task from a fresh worktree, but keep its current provider.
+        self._handle_failure(
             slot,
             original_dir,
-            "done" if merge_ok else "failed",
-            commits,
-            merge_error,
-            attempt=retries_used + 1,
-            retries=retries_used,
+            title,
+            merge_error or "git merge failed",
+            commits=commits,
+            allow_provider_switch=False,
         )
-
-        # Cleanup worktree
-        cleanup_agent_worktree(
-            slot.worktree_dir,
-            slot.branch_name,
-            original_dir=original_dir,
-            log_file=slot.log_file,
-        )
-        if delete_merged_branch:
-            delete_branch(slot.branch_name, cwd=original_dir)
-            self.completed_branches.append(slot.branch_name)
 
 
     def _handle_failure(
@@ -775,6 +892,9 @@ class Runner:
         original_dir: Path,
         title: str,
         err_msg: str,
+        *,
+        commits: int = 0,
+        allow_provider_switch: bool = True,
     ) -> None:
         retries_used = self.retry_counts.get(slot.task_id, 0)
         attempt = retries_used + 1
@@ -783,7 +903,7 @@ class Runner:
         provider_switch: tuple[str, str] | None = None
 
         if should_retry:
-            if _is_external_failure(err_msg):
+            if allow_provider_switch and _is_external_failure(err_msg):
                 provider_switch = self._rotate_provider_for_task(slot.task_id)
             self.retry_counts[slot.task_id] = retries_used + 1
             delay = max(self.cfg.retry_delay, 0)
@@ -811,7 +931,7 @@ class Runner:
             slot,
             original_dir,
             status,
-            0,
+            commits,
             err_msg,
             attempt=attempt,
             retries=retries_used,

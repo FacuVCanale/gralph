@@ -52,6 +52,7 @@ class TestIsExternalFailure:
     def test_permission_and_command_not_found(self):
         assert _is_external_failure("permission denied") is True
         assert _is_external_failure("command not found") is True
+        assert _is_external_failure("CommandNotFoundException") is True
         assert _is_external_failure("ENOENT") is True
         assert _is_external_failure("EACCES") is True
         assert _is_external_failure("rejected: blocked by policy") is True
@@ -64,6 +65,17 @@ class TestIsExternalFailure:
     def test_stalled_is_external(self):
         assert _is_external_failure("Agent 1 stalled for 600s") is True
         assert _is_external_failure("stalled") is True
+
+    def test_merge_conflict_is_external(self):
+        assert _is_external_failure(
+            "Automatic merge failed; fix conflicts and then commit the result."
+        ) is True
+        assert _is_external_failure("CONFLICT (content): Merge conflict in src/app.ts") is True
+
+    def test_merge_blocked_by_local_changes_is_not_external(self):
+        assert _is_external_failure(
+            "Your local changes to the following files would be overwritten by merge."
+        ) is False
 
     def test_internal_errors_not_external(self):
         assert _is_external_failure("SyntaxError: invalid syntax") is False
@@ -173,6 +185,64 @@ class TestExtractErrorFromLog:
             + "\n",
         )
         assert _extract_error_from_logs(tmp_path / "missing.log", stream) == "Blocked by policy"
+
+    def test_stream_success_result_with_is_error_false_is_ignored(self, tmp_path: Path):
+        stream = tmp_path / "out.stream"
+        write_text(
+            stream,
+            (
+                '{"type":"result","subtype":"success","is_error":false,'
+                '"result":"Installing dependencies and running checks"}\n'
+            ),
+        )
+        assert _extract_error_from_logs(tmp_path / "missing.log", stream) == ""
+
+    def test_stream_tool_call_completed_with_embedded_error_text_is_ignored(self, tmp_path: Path):
+        stream = tmp_path / "out.stream"
+        write_text(
+            stream,
+            (
+                '{"type":"tool_call","subtype":"completed","call_id":"tool_1",'
+                '"tool_call":{"editToolCall":{"args":{"path":"tests/server.test.ts",'
+                '"streamContent":"expect((JSON.parse(response.body) as { error: string }).error).toBe(\\"Unauthorized\\");"},'
+                '"result":{"success":{"path":"tests/server.test.ts"}}}}}\n'
+            ),
+        )
+        assert _extract_error_from_logs(tmp_path / "missing.log", stream) == ""
+
+    def test_stream_skips_tool_call_noise_and_recovers_prior_structured_error(
+        self,
+        tmp_path: Path,
+    ):
+        stream = tmp_path / "out.stream"
+        write_text(
+            stream,
+            "\n".join(
+                [
+                    '{"type":"error","error":{"message":"rate_limit hit"}}',
+                    '{"type":"tool_call","subtype":"completed","call_id":"tool_1",'
+                    '"tool_call":{"editToolCall":{"args":{"path":"tests/server.test.ts",'
+                    '"streamContent":"expect((JSON.parse(response.body) as { error: string }).error).toBe(\\"Unauthorized\\");"},'
+                    '"result":{"success":{"path":"tests/server.test.ts"}}}}}',
+                ]
+            )
+            + "\n",
+        )
+        assert _extract_error_from_logs(tmp_path / "missing.log", stream) == "rate_limit hit"
+
+    def test_stream_result_with_is_error_true_uses_result_text(self, tmp_path: Path):
+        stream = tmp_path / "out.stream"
+        write_text(
+            stream,
+            (
+                '{"type":"result","subtype":"error","is_error":true,'
+                '"result":"Tool execution failed due to timeout"}\n'
+            ),
+        )
+        assert _extract_error_from_logs(
+            tmp_path / "missing.log",
+            stream,
+        ) == "Tool execution failed due to timeout"
 
 
 # ── Failure type in report (classification consistency) ──────────────────────

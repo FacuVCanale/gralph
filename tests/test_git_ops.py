@@ -159,6 +159,41 @@ class TestWorktreeOperations:
                 original_dir=git_repo,
             )
 
+    def test_create_agent_worktree_uses_suffix_when_branch_is_checked_out_elsewhere(
+        self, git_repo: Path
+    ) -> None:
+        wt_base = git_repo / "worktrees"
+        wt_base.mkdir()
+        base = git_ops.current_branch(cwd=git_repo)
+
+        locked_branch = "gralph/agent-1-task-1"
+        stale_wt = git_repo / "stale-agent-branch"
+
+        subprocess.run(
+            ["git", "branch", locked_branch, base],
+            cwd=git_repo,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "worktree", "add", str(stale_wt), locked_branch],
+            cwd=git_repo,
+            capture_output=True,
+            check=True,
+        )
+
+        wt_dir, branch = git_ops.create_agent_worktree(
+            "TASK-1",
+            1,
+            base_branch=base,
+            worktree_base=wt_base,
+            original_dir=git_repo,
+        )
+        assert wt_dir.is_dir()
+        assert branch.startswith("gralph/agent-1-task-1")
+        assert branch != locked_branch
+        assert git_ops.branch_exists(branch, cwd=git_repo)
+
     def test_worktree_add_remove(self, git_repo: Path) -> None:
         base = git_ops.current_branch(cwd=git_repo)
         branch = "wt-test-branch"

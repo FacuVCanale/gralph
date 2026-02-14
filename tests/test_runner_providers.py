@@ -18,7 +18,7 @@ if "gralph.tasks.io" not in sys.modules:
     tasks_io_stub.mark_task_complete_in_file = lambda *_args, **_kwargs: None
     sys.modules["gralph.tasks.io"] = tasks_io_stub
 
-from gralph.runner import Runner
+from gralph.runner import Runner, _build_task_prompt
 from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
 
@@ -292,6 +292,50 @@ def test_external_failure_retry_keeps_provider_when_only_one(git_repo: Path) -> 
         _cleanup_slot_files(first_slot)
 
 
+def test_merge_conflict_retry_keeps_provider_assignment(git_repo: Path) -> None:
+    tf = _make_task_file(["TASK-001"])
+    cfg = Config(
+        ai_engine="claude",
+        providers=["claude", "codex"],
+        max_parallel=1,
+        max_retries=1,
+        retry_delay=0,
+        base_branch="main",
+    )
+    runner = Runner(cfg, tf, ClaudeEngine(), Scheduler(tf))
+
+    worktree_base = git_repo / "worktrees"
+    worktree_base.mkdir(exist_ok=True)
+
+    first_slot = None
+    with patch(
+        "gralph.runner.get_engine",
+        side_effect=lambda provider, opencode_model="": _AsyncTestEngine(provider),
+    ):
+        with patch(
+            "gralph.runner.create_agent_worktree",
+            side_effect=_worktree_factory(worktree_base),
+        ):
+            with patch("gralph.runner.cleanup_agent_worktree"):
+                with patch.object(runner, "_save_report"):
+                    runner._launch_agent("TASK-001", git_repo, worktree_base)
+                    first_slot = runner.active.pop()
+                    first_slot.proc.wait(timeout=5)
+
+                    runner._handle_failure(
+                        first_slot,
+                        git_repo,
+                        "TASK-001",
+                        "Automatic merge failed; CONFLICT (content)",
+                        allow_provider_switch=False,
+                    )
+
+    assert runner.sched.state("TASK-001") == TaskState.PENDING
+    assert runner.task_providers["TASK-001"] == "claude"
+    if first_slot is not None:
+        _cleanup_slot_files(first_slot)
+
+
 def test_provider_assignment_is_sticky_and_wraps_in_round_robin() -> None:
     tf = _make_task_file(["TASK-001", "TASK-002", "TASK-003", "TASK-004"])
     cfg = Config(
@@ -424,3 +468,12 @@ def test_internal_failure_does_not_rotate_provider_on_failure(git_repo: Path) ->
     assert runner.task_provider_attempts["TASK-001"] == ["claude"]
     if first_slot is not None:
         _cleanup_slot_files(first_slot)
+
+
+def test_task_prompt_includes_windows_powershell_guardrails() -> None:
+    with patch("gralph.runner.platform.system", return_value="Windows"):
+        prompt = _build_task_prompt("TASK-001", "Sample task", "src/app.ts")
+
+    assert "SHELL COMPATIBILITY (Windows PowerShell):" in prompt
+    assert "Do NOT use '&&' between commands" in prompt
+    assert "$ErrorActionPreference = 'Stop'" in prompt

@@ -29,7 +29,7 @@ class CursorEngine(EngineBase):
     def build_cmd(self, prompt: str, *, use_auto: bool = False) -> list[str]:
         # Use resolved path so subprocess gets an absolute path; on some platforms
         # (e.g. Windows with pipx) the child process resolves PATH differently.
-        # Note: prompt is passed via stdin in run_sync to avoid Windows command-line length limits.
+        # Cursor print mode requires the prompt as a CLI argument.
         agent = shutil.which("agent") or "agent"
         cmd = [
             agent,
@@ -40,6 +40,7 @@ class CursorEngine(EngineBase):
         ]
         if use_auto:
             cmd.extend(["--model", "auto"])
+        cmd.append(prompt)
         return cmd
 
     def parse_output(self, raw: str | None) -> EngineResult:
@@ -86,7 +87,7 @@ class CursorEngine(EngineBase):
         log_file: Path | None = None,
         timeout: int | None = None,
     ) -> EngineResult:
-        """Execute Cursor agent with prompt via stdin to avoid Windows command-line length limits."""
+        """Execute Cursor agent synchronously."""
         result = self._run_once(prompt, cwd=cwd, log_file=log_file, timeout=timeout)
 
         # On rate/usage limit, retry once with --model auto (higher limit), then fail if still error
@@ -130,7 +131,7 @@ class CursorEngine(EngineBase):
         try:
             proc = subprocess.run(
                 cmd,
-                input=prompt,
+                input=None,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
