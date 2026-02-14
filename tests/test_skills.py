@@ -46,17 +46,10 @@ def test_download_skill_uses_default_skills_url() -> None:
     tmp.unlink(missing_ok=True)
 
 
-def test_download_skill_falls_back_to_local_when_remote_unavailable(tmp_path: Path) -> None:
-    """When remote fetch fails, downloader should copy bundled local skill."""
-    local_skill = tmp_path / "skills" / "task-metadata" / "SKILL.md"
-    local_skill.parent.mkdir(parents=True, exist_ok=True)
-    local_skill.write_text("# local fallback\n", encoding="utf-8")
-
+def test_download_skill_returns_none_when_remote_unavailable(tmp_path: Path) -> None:
+    """Remote failures should not silently fallback to local bundled skills."""
     with patch("gralph.skills.urlopen", side_effect=URLError("network down")):
         with patch("gralph.skills.resolve_repo_root", return_value=tmp_path):
             tmp = _download_skill("task-metadata", DEFAULT_SKILLS_URL)
 
-    assert tmp is not None
-    assert tmp.read_text(encoding="utf-8") == "# local fallback\n"
-
-    tmp.unlink(missing_ok=True)
+    assert tmp is None

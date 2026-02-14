@@ -23,7 +23,10 @@ def _git(*args: str, cwd: Path | None = None, check: bool = False) -> subprocess
 
 def current_branch(cwd: Path | None = None) -> str:
     r = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd)
-    return r.stdout.strip() if r.returncode == 0 else "main"
+    branch = r.stdout.strip()
+    if r.returncode != 0 or not branch:
+        raise RuntimeError("Failed to determine current git branch. Are you in a git repository?")
+    return branch
 
 
 def branch_exists(name: str, cwd: Path | None = None) -> bool:

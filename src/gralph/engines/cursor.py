@@ -4,23 +4,17 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
+from gralph.engine_errors import looks_like_rate_limit
 from gralph.engines.base import EngineBase, EngineResult
-from gralph.io_utils import open_text
 
 
 def _is_rate_or_usage_error(error: str, stderr: str = "", stdout: str = "") -> bool:
     """True if the failure looks like a rate limit or usage limit from Cursor."""
     combined = " ".join((error, stderr, stdout)).lower()
-    return (
-        "rate limit" in combined
-        or "usage limit" in combined
-        or "you've hit your limit" in combined
-        or '"error":"rate_limit"' in stdout
-    )
+    return looks_like_rate_limit(combined) or '"error":"rate_limit"' in stdout
 
 
 class CursorEngine(EngineBase):
@@ -88,32 +82,7 @@ class CursorEngine(EngineBase):
         timeout: int | None = None,
     ) -> EngineResult:
         """Execute Cursor agent synchronously."""
-        result = self._run_once(prompt, cwd=cwd, log_file=log_file, timeout=timeout)
-
-        # On rate/usage limit, retry once with --model auto (higher limit), then fail if still error
-        if result.error and _is_rate_or_usage_error(result.error, "", ""):
-            # Re-detect from full stderr/stdout; we only have result.error here, so check that
-            try:
-                from gralph import log as glog
-
-                glog.warn(
-                    "Cursor hit rate/usage limit. Retrying with --model auto (higher usage allowance)…"
-                )
-            except Exception:
-                pass
-            retry = self._run_once(
-                prompt,
-                cwd=cwd,
-                log_file=log_file,
-                timeout=timeout,
-                use_auto=True,
-            )
-            if not retry.error and retry.text:
-                return retry
-            # Retry also failed; return retry result so user sees the error
-            return retry
-
-        return result
+        return self._run_once(prompt, cwd=cwd, log_file=log_file, timeout=timeout)
 
     def _run_once(
         self,
@@ -128,48 +97,29 @@ class CursorEngine(EngineBase):
         cmd = self.build_cmd(prompt, use_auto=use_auto)
         start = time.monotonic()
 
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=None,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=cwd,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return EngineResult(error="timeout", return_code=-1)
-        except FileNotFoundError:
-            return EngineResult(error=f"{cmd[0]} not found", return_code=-1)
+        proc_or_error = self._run_completed_subprocess(
+            cmd,
+            cwd=cwd,
+            timeout=timeout,
+        )
+        if isinstance(proc_or_error, EngineResult):
+            return proc_or_error
 
-        elapsed_ms = int((time.monotonic() - start) * 1000)
+        result = self.parse_output(proc_or_error.stdout or "")
+        result = self._finalize_completed_run(
+            proc=proc_or_error,
+            result=result,
+            start_monotonic=start,
+            log_file=log_file,
+        )
 
-        if log_file:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open_text(log_file, "a") as f:
-                if proc.stderr:
-                    f.write(proc.stderr)
-
-        result = self.parse_output(proc.stdout or "")
-        result.return_code = proc.returncode
-        if not result.duration_ms:
-            result.duration_ms = elapsed_ms
-
-        stderr = (proc.stderr or "").strip()
-        error = EngineBase._check_errors(proc.stdout)
+        stderr = (proc_or_error.stderr or "").strip()
+        error = EngineBase._check_errors(proc_or_error.stdout)
         if error and not result.error:
             result.error = error
 
-        if proc.returncode != 0 and not result.error:
-            if stderr:
-                result.error = stderr.splitlines()[0]
-            else:
-                result.error = f"exit code {proc.returncode}"
-
         # If we still have no error text but stderr has usage/rate message, set it
-        if not result.error and stderr and _is_rate_or_usage_error("", stderr, proc.stdout or ""):
+        if not result.error and stderr and _is_rate_or_usage_error("", stderr, proc_or_error.stdout or ""):
             result.error = stderr.splitlines()[0]
 
         return result

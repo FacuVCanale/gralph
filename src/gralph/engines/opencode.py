@@ -8,10 +8,8 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import IO
 
 from gralph.engines.base import EngineBase, EngineResult
-from gralph.io_utils import open_text
 
 
 class OpenCodeEngine(EngineBase):
@@ -45,47 +43,22 @@ class OpenCodeEngine(EngineBase):
         cmd = self.build_cmd(prompt)
         start = time.monotonic()
 
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=cwd,
-                timeout=timeout,
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            return EngineResult(error="timeout", return_code=-1)
-        except FileNotFoundError:
-            return EngineResult(error=f"{cmd[0]} not found", return_code=-1)
+        proc_or_error = self._run_completed_subprocess(
+            cmd,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+        )
+        if isinstance(proc_or_error, EngineResult):
+            return proc_or_error
 
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-
-        if log_file:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open_text(log_file, "a") as f:
-                if proc.stderr:
-                    f.write(proc.stderr)
-
-        result = self.parse_output(proc.stdout or "")
-        result.return_code = proc.returncode
-        if not result.duration_ms:
-            result.duration_ms = elapsed_ms
-
-        error = self._check_errors(proc.stdout)
-        if error and not result.error:
-            result.error = error
-
-        if proc.returncode != 0 and not result.error:
-            stderr = (proc.stderr or "").strip()
-            if stderr:
-                result.error = stderr.splitlines()[0]
-            else:
-                result.error = f"exit code {proc.returncode}"
-
-        return result
+        result = self.parse_output(proc_or_error.stdout or "")
+        return self._finalize_completed_run(
+            proc=proc_or_error,
+            result=result,
+            start_monotonic=start,
+            log_file=log_file,
+        )
 
     def run_async(
         self,
@@ -99,32 +72,11 @@ class OpenCodeEngine(EngineBase):
         cmd = self.build_cmd(prompt)
         env = os.environ.copy()
         env["OPENCODE_PERMISSION"] = '{"*":"allow"}'
-
-        stdout_fh: IO[str] | int = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
-        stderr_fh: IO[str] | int = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
-        creationflags = self._creationflags()
-
-        if creationflags:
-            return subprocess.Popen(
-                cmd,
-                stdout=stdout_fh,
-                stderr=stderr_fh,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=cwd,
-                env=env,
-                creationflags=creationflags,
-            )
-
-        return subprocess.Popen(
+        return self._launch_async_cmd(
             cmd,
-            stdout=stdout_fh,
-            stderr=stderr_fh,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             cwd=cwd,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
             env=env,
         )
 

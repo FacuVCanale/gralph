@@ -288,14 +288,22 @@ class TestCliProvidersParsingUnits:
 class TestCliDryRun:
     """--dry-run must run without ModuleNotFoundError and show plan."""
 
-    def test_dry_run_requires_prd(self, cli_runner):
+    def test_dry_run_requires_prd(self, cli_runner, tmp_path: Path, install_fake_skills):
         # No PRD.md in cwd -> must exit with error (not crash)
-        r = cli_runner.invoke(main, ["--dry-run"])
-        # Expect failure: PRD not found or similar
-        assert r.exit_code != 0 or "PRD" in r.output or "prd" in r.output.lower()
+        install_fake_skills(tmp_path, "claude")
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            r = cli_runner.invoke(main, ["--dry-run"])
+        finally:
+            os.chdir(old_cwd)
 
-    def test_dry_run_with_minimal_project(self, tmp_path: Path):
+        assert r.exit_code != 0
+        assert "PRD" in r.output or "prd" in r.output.lower()
+
+    def test_dry_run_with_minimal_project(self, tmp_path: Path, install_fake_skills):
         # Minimal project: PRD.md + artifacts/prd/<id>/tasks.yaml
+        install_fake_skills(tmp_path, "claude")
         write_text(tmp_path / "PRD.md", "# Test\nprd-id: cli-test\n")
         run_dir = tmp_path / "artifacts" / "prd" / "cli-test"
         run_dir.mkdir(parents=True)
@@ -312,9 +320,10 @@ class TestCliDryRun:
         assert "TASK-001" in proc.stdout or "One" in proc.stdout
 
     def test_dry_run_invokes_metadata_agent_when_tasks_yaml_missing(
-        self, cli_runner, tmp_path: Path
+        self, cli_runner, tmp_path: Path, install_fake_skills
     ):
         """When tasks.yaml does not exist, metadata agent runs; mock engine creates it."""
+        install_fake_skills(tmp_path, "codex")
         prd_content = "# PRD: Meta Test\nprd-id: meta-test\n\nBody.\n"
         write_text(tmp_path / "prd-meta.md", prd_content)
 
@@ -399,8 +408,11 @@ class TestCliDryRun:
 class TestCliFullPipelineRun:
     """Pipeline run without --dry-run must not crash on Config attribute access."""
 
-    def test_resume_run_creates_progress_and_exits_success(self, cli_runner, tmp_path: Path):
+    def test_resume_run_creates_progress_and_exits_success(
+        self, cli_runner, tmp_path: Path, install_fake_skills
+    ):
         """Running with --resume (no --dry-run) reaches progress.txt creation and Runner; no AttributeError on cfg.run_dir."""
+        install_fake_skills(tmp_path, "codex")
         write_text(tmp_path / "PRD.md", "# Test\nprd-id: cli-test\n")
         run_dir = tmp_path / "artifacts" / "prd" / "cli-test"
         run_dir.mkdir(parents=True)
@@ -457,9 +469,10 @@ class TestCliFullPipelineRun:
         assert len(progress_files) >= 1, f"expected progress.txt under {artifacts}"
 
     def test_fresh_prd_run_creates_progress_and_exits_success(
-        self, cli_runner, tmp_path: Path
+        self, cli_runner, tmp_path: Path, install_fake_skills
     ):
         """Running with --prd (no --resume, no --dry-run) reaches progress.txt; same cfg.artifacts_dir path."""
+        install_fake_skills(tmp_path, "codex")
         prd_content = "# PRD: Fresh\nprd-id: fresh-test\n\nBody.\n"
         write_text(tmp_path / "PRD.md", prd_content)
         minimal_tasks = (
@@ -527,7 +540,10 @@ class TestCliFullPipelineRun:
         progress_files = list((tmp_path / "artifacts").rglob("progress.txt"))
         assert len(progress_files) >= 1
 
-    def test_resume_run_fails_fast_when_run_branch_is_dirty(self, cli_runner, tmp_path: Path):
+    def test_resume_run_fails_fast_when_run_branch_is_dirty(
+        self, cli_runner, tmp_path: Path, install_fake_skills
+    ):
+        install_fake_skills(tmp_path, "claude")
         write_text(tmp_path / "PRD.md", "# Test\nprd-id: dirty-run\n")
         run_dir = tmp_path / "artifacts" / "prd" / "dirty-run"
         run_dir.mkdir(parents=True)
@@ -685,11 +701,13 @@ class TestCliPrdSubcommand:
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
+            skill_path = tmp_path / ".claude" / "skills" / "prd" / "SKILL.md"
+            skill_path.parent.mkdir(parents=True, exist_ok=True)
+            write_text(skill_path, "# PRD skill\n")
             with patch("gralph.engines.registry.get_engine", return_value=mock_engine):
-                with patch("gralph.cli._find_prd_skill", return_value=None):
-                    with patch.object(sys.stdin, "isatty", return_value=True):
-                        with patch("gralph.cli.click.prompt", return_value="1B"):
-                            _run_prd_generation(cfg, "Implement provider fallback", "", no_questions=False)
+                with patch.object(sys.stdin, "isatty", return_value=True):
+                    with patch("gralph.cli.click.prompt", return_value="1B"):
+                        _run_prd_generation(cfg, "Implement provider fallback", "", no_questions=False)
         finally:
             os.chdir(old_cwd)
 
@@ -704,45 +722,36 @@ class TestCliPrdSubcommand:
         assert "## Documentation Requirements" in phase2_prompt
         assert "## Definition of Done" in phase2_prompt
 
-    def test_find_prd_skill_for_claude_prefers_bundled_over_user(self, tmp_path: Path):
-        from gralph.cli import _find_prd_skill
+    def test_find_prd_skill_for_claude_reads_project_install(self, tmp_path: Path):
+        from gralph.skills import find_skill_file
 
         fake_repo = tmp_path / "repo"
-        fake_home = tmp_path / "home"
-
-        user_skill = fake_home / ".claude" / "skills" / "prd" / "SKILL.md"
-        user_skill.parent.mkdir(parents=True, exist_ok=True)
-        user_skill.write_text("# user skill")
-
-        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
-        bundled.parent.mkdir(parents=True, exist_ok=True)
-        bundled.write_text("# bundled skill")
-
-        with patch("gralph.config.resolve_repo_root", return_value=fake_repo):
-            with patch("pathlib.Path.home", return_value=fake_home):
-                result = _find_prd_skill("claude")
-
-        assert result == bundled
-
-    def test_find_prd_skill_for_claude_prefers_project_specific(self, tmp_path: Path):
-        from gralph.cli import _find_prd_skill
-
-        fake_repo = tmp_path / "repo"
-        fake_home = tmp_path / "home"
-
         project_skill = fake_repo / ".claude" / "skills" / "prd" / "SKILL.md"
         project_skill.parent.mkdir(parents=True, exist_ok=True)
         project_skill.write_text("# project skill")
 
-        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
-        bundled.parent.mkdir(parents=True, exist_ok=True)
-        bundled.write_text("# bundled skill")
-
-        with patch("gralph.config.resolve_repo_root", return_value=fake_repo):
-            with patch("pathlib.Path.home", return_value=fake_home):
-                result = _find_prd_skill("claude")
+        with patch("gralph.skills.resolve_repo_root", return_value=fake_repo):
+            result = find_skill_file("claude", "prd")
 
         assert result == project_skill
+
+    def test_find_prd_skill_for_claude_does_not_fallback_to_bundled_or_user(self, tmp_path: Path):
+        from gralph.skills import find_skill_file
+
+        fake_repo = tmp_path / "repo"
+        fake_home = tmp_path / "home"
+        user_skill = fake_home / ".claude" / "skills" / "prd" / "SKILL.md"
+        user_skill.parent.mkdir(parents=True, exist_ok=True)
+        user_skill.write_text("# user skill")
+        bundled = fake_repo / "skills" / "prd" / "SKILL.md"
+        bundled.parent.mkdir(parents=True, exist_ok=True)
+        bundled.write_text("# bundled")
+
+        with patch("gralph.skills.resolve_repo_root", return_value=fake_repo):
+            with patch("pathlib.Path.home", return_value=fake_home):
+                result = find_skill_file("claude", "prd")
+
+        assert result is None
 
     def test_prd_rename_overwrites_existing_file(self, tmp_path: Path):
         """When renaming prd-temp.md to prd-<id>.md, overwrite existing target (Windows-safe)."""

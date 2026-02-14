@@ -381,17 +381,15 @@ class TestCursorEngine:
         result = engine.parse_output(raw)
         assert result.text == "assistant text"
 
-    def test_run_sync_retries_with_auto_when_rate_limited(self) -> None:
+    def test_run_sync_does_not_retry_rate_limited_errors(self) -> None:
         engine = CursorEngine()
         first = EngineResult(text="", error="Rate limit exceeded", return_code=1)
-        second = EngineResult(text="ok", error="", return_code=0)
 
-        with patch.object(engine, "_run_once", side_effect=[first, second]) as mock_once:
+        with patch.object(engine, "_run_once", return_value=first) as mock_once:
             result = engine.run_sync("prompt")
 
-        assert result.text == "ok"
-        assert mock_once.call_count == 2
-        assert mock_once.call_args_list[1].kwargs.get("use_auto") is True
+        assert result.error == "Rate limit exceeded"
+        assert mock_once.call_count == 1
 
     def test_run_sync_does_not_retry_non_rate_errors(self) -> None:
         engine = CursorEngine()

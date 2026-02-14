@@ -76,6 +76,26 @@ class _PipelineEngine(EngineBase):
     ["--claude", "--opencode", "--codex", "--cursor", "--gemini"],
 )
 def test_pipeline_runs_end_to_end_for_each_provider(cli_runner, tmp_path: Path, provider_flag: str):
+    provider = provider_flag.lstrip("-")
+    from gralph.skills import REQUIRED_SKILLS
+
+    for skill in REQUIRED_SKILLS:
+        match provider:
+            case "claude":
+                target = tmp_path / ".claude" / "skills" / skill / "SKILL.md"
+            case "codex":
+                target = tmp_path / ".codex" / "skills" / skill / "SKILL.md"
+            case "opencode":
+                target = tmp_path / ".opencode" / "skill" / skill / "SKILL.md"
+            case "cursor":
+                target = tmp_path / ".cursor" / "rules" / f"{skill}.mdc"
+            case "gemini":
+                target = tmp_path / ".gemini" / "skills" / skill / "SKILL.md"
+            case _:
+                raise ValueError(provider)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_text(target, f"# {skill}\n")
+
     prd_content = "# PRD: Provider Matrix\nprd-id: provider-matrix\n\nBody.\n"
     write_text(tmp_path / "PRD.md", prd_content)
     _init_git_repo(tmp_path)
@@ -122,6 +142,26 @@ def test_pipeline_runs_end_to_end_for_each_provider(cli_runner, tmp_path: Path, 
     ["--claude", "--opencode", "--codex", "--cursor", "--gemini"],
 )
 def test_pipeline_writes_tasks_yaml_from_stdout_fallback(cli_runner, tmp_path: Path, provider_flag: str):
+    provider = provider_flag.lstrip("-")
+    from gralph.skills import REQUIRED_SKILLS
+
+    for skill in REQUIRED_SKILLS:
+        match provider:
+            case "claude":
+                target = tmp_path / ".claude" / "skills" / skill / "SKILL.md"
+            case "codex":
+                target = tmp_path / ".codex" / "skills" / skill / "SKILL.md"
+            case "opencode":
+                target = tmp_path / ".opencode" / "skill" / skill / "SKILL.md"
+            case "cursor":
+                target = tmp_path / ".cursor" / "rules" / f"{skill}.mdc"
+            case "gemini":
+                target = tmp_path / ".gemini" / "skills" / skill / "SKILL.md"
+            case _:
+                raise ValueError(provider)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_text(target, f"# {skill}\n")
+
     prd_content = "# PRD: Provider Matrix Fallback\nprd-id: provider-matrix-fallback\n\nBody.\n"
     write_text(tmp_path / "PRD.md", prd_content)
     _init_git_repo(tmp_path)

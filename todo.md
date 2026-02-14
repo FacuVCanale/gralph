@@ -20,3 +20,4 @@
       gralph --prd tasks.md
       ```
 - [ ] Implement forceful init
+- [ ] Add a verifier Agent for good coding (responsabilidades separadas, modularization, etc)

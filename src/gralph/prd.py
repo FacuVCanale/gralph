@@ -48,6 +48,32 @@ def copy_prd_to_run_dir(prd_file: Path, run_dir: Path) -> None:
     shutil.copy2(prd_file, run_dir / "PRD.md")
 
 
+def inject_prd_id(prd_file: Path, prd_id: str) -> None:
+    """Insert a ``prd-id`` line after the first markdown title."""
+    content = read_text(prd_file)
+    lines = content.splitlines(keepends=True)
+
+    for idx, line in enumerate(lines):
+        if line.startswith("# "):
+            lines.insert(idx + 1, f"\nprd-id: {prd_id}\n")
+            break
+    else:
+        lines.insert(0, f"prd-id: {prd_id}\n\n")
+
+    prd_file.write_text("".join(lines), encoding="utf-8")
+
+
+def normalize_prd_id(prd_file: Path, prd_id: str) -> None:
+    """Replace the first existing ``prd-id`` with ``prd_id``."""
+    content = read_text(prd_file)
+    lines = content.splitlines(keepends=True)
+    for idx, line in enumerate(lines):
+        if line.startswith("prd-id:"):
+            lines[idx] = f"prd-id: {prd_id}\n"
+            break
+    prd_file.write_text("".join(lines), encoding="utf-8")
+
+
 def slugify(text: str, max_len: int = 50) -> str:
     """Convert text to a URL/branch-safe slug."""
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")

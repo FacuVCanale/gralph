@@ -17,6 +17,12 @@ from types import FrameType
 
 from gralph import log
 from gralph.config import Config
+from gralph.engine_errors import (
+    looks_like_external_failure,
+    looks_like_merge_conflict,
+    looks_like_policy_block,
+    looks_like_rate_limit,
+)
 from gralph.engines.base import EngineBase
 from gralph.engines.registry import get_engine
 from gralph.git_ops import (
@@ -125,34 +131,12 @@ Focus only on implementing: {task_title}"""
 
 def _is_external_failure(msg: str) -> bool:
     """Heuristic: detect external/infra/toolchain failures."""
-    if not msg:
-        return False
-    if _is_merge_conflict_failure(msg):
-        return True
-    lower = msg.lower()
-    patterns = [
-        "buninstallfailederror", "command not found", "enoent", "eacces",
-        "commandnotfoundexception", "objectnotfound:",
-        "permission denied", "network", "timeout", "tls", "econnreset",
-        "etimedout", "lockfile", "install", "certificate", "ssl",
-        "rate limit", "quota", "429", "too many requests", "hit your limit", "stalled",
-        "blocked by policy", "read-only sandbox", "approval_policy",
-    ]
-    return any(p in lower for p in patterns)
+    return looks_like_external_failure(msg)
 
 
 def _is_merge_conflict_failure(msg: str) -> bool:
     """True when a git merge failed due to textual conflicts."""
-    if not msg:
-        return False
-    lower = msg.lower()
-    markers = [
-        "automatic merge failed",
-        "conflict (content)",
-        "conflict in ",
-        "merge conflict",
-    ]
-    return any(marker in lower for marker in markers)
+    return looks_like_merge_conflict(msg)
 
 
 def _extract_policy_block_detail_from_stream(stream: str) -> str:
@@ -167,7 +151,7 @@ def _extract_policy_block_detail_from_stream(stream: str) -> str:
         if not stripped:
             continue
 
-        if "blocked by policy" in stripped.lower():
+        if looks_like_policy_block(stripped):
             return "Blocked by policy"
 
         try:
@@ -179,11 +163,11 @@ def _extract_policy_block_detail_from_stream(stream: str) -> str:
             continue
 
         err = obj.get("error")
-        if isinstance(err, str) and "blocked by policy" in err.lower():
+        if isinstance(err, str) and looks_like_policy_block(err):
             return "Blocked by policy"
         if isinstance(err, dict):
             msg = str(err.get("message", "")).strip()
-            if "blocked by policy" in msg.lower():
+            if looks_like_policy_block(msg):
                 return "Blocked by policy"
 
         item = obj.get("item")
@@ -192,7 +176,7 @@ def _extract_policy_block_detail_from_stream(stream: str) -> str:
         if str(item.get("type", "")).lower() != "command_execution":
             continue
         output = str(item.get("aggregated_output", "")).strip()
-        if "blocked by policy" in output.lower():
+        if looks_like_policy_block(output):
             return "Blocked by policy"
 
     return ""
@@ -227,12 +211,12 @@ def _extract_rate_limit_detail_from_stream(stream: str) -> str:
                     if not isinstance(part, dict):
                         continue
                     text = part.get("text")
-                    if isinstance(text, str) and "hit your limit" in text.lower():
+                    if isinstance(text, str) and looks_like_rate_limit(text):
                         return text.strip()
 
         # Result events may also carry a plain string with reset info.
         result_text = obj.get("result")
-        if isinstance(result_text, str) and "hit your limit" in result_text.lower():
+        if isinstance(result_text, str) and looks_like_rate_limit(result_text):
             return result_text.strip()
 
     return ""
@@ -323,7 +307,7 @@ def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) ->
             if not stripped:
                 continue
             lower = stripped.lower()
-            if "blocked by policy" in lower:
+            if looks_like_policy_block(lower):
                 return "Blocked by policy"
 
             structured_error, is_structured_json = _extract_structured_error_line(stripped)
@@ -501,7 +485,11 @@ class Runner:
         worktree_base = Path(self.cfg.worktree_base)
 
         if not self.cfg.base_branch:
-            self.cfg.base_branch = current_branch()
+            try:
+                self.cfg.base_branch = current_branch()
+            except RuntimeError as e:
+                log.error(str(e))
+                return False
 
         log.info(f"Running DAG-aware parallel execution (max {self.cfg.max_parallel} agents)…")
         log.info(f"Tasks: {self.sched.count_pending()} pending")
@@ -1102,7 +1090,7 @@ class Runner:
         if retries_used >= self.cfg.max_retries:
             return False
         lower = err_msg.lower()
-        if "blocked by policy" in lower or "read-only sandbox" in lower:
+        if looks_like_policy_block(lower):
             return False
         return _is_external_failure(err_msg)
 

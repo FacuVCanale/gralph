@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from gralph.io_utils import write_text
+from gralph.skills import REQUIRED_SKILLS
 from gralph.tasks.model import Task, TaskFile
 
 
@@ -89,3 +90,32 @@ def make_task():
 def make_task_file():
     """Factory fixture that creates TaskFile instances."""
     return _make_task_file
+
+
+def _skill_target(repo: Path, engine: str, skill: str) -> Path:
+    match engine:
+        case "claude":
+            return repo / ".claude" / "skills" / skill / "SKILL.md"
+        case "codex":
+            return repo / ".codex" / "skills" / skill / "SKILL.md"
+        case "opencode":
+            return repo / ".opencode" / "skill" / skill / "SKILL.md"
+        case "cursor":
+            return repo / ".cursor" / "rules" / f"{skill}.mdc"
+        case "gemini":
+            return repo / ".gemini" / "skills" / skill / "SKILL.md"
+        case _:
+            raise ValueError(f"Unsupported engine for skills fixture: {engine}")
+
+
+@pytest.fixture
+def install_fake_skills():
+    """Create minimal required skill files for one engine under a repo root."""
+
+    def _install(repo: Path, engine: str) -> None:
+        for skill in REQUIRED_SKILLS:
+            target = _skill_target(repo, engine, skill)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_text(target, f"# {skill}\n")
+
+    return _install

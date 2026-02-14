@@ -1,4 +1,4 @@
-"""GRALPH CLI — drop-in replacement for the shell scripts.
+﻿"""GRALPH CLI â€” drop-in replacement for the shell scripts.
 
 Installed as ``gralph`` console_script via pipx / pip.
 """
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from gralph.engines.base import EngineBase, EngineResult
 
 
-# ── Custom Click group that handles PS1 aliases ──────────────────────
+# â”€â”€ Custom Click group that handles PS1 aliases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class GralphGroup(click.Group):
     """Handle ``--show-help``, ``-help``, ``--show-version`` etc. PS1 aliases."""
@@ -187,7 +187,7 @@ def main(
     do_update: bool,
     verbose: bool,
 ) -> None:
-    """GRALPH — Autonomous AI Coding Loop.
+    """GRALPH â€” Autonomous AI Coding Loop.
 
     Reads a PRD, generates tasks.yaml, and runs AI agents in parallel
     using a DAG scheduler with mutex support.
@@ -213,14 +213,14 @@ def main(
 
     glog.set_verbose(verbose)
 
-    # ── Handle --update early ────────────────────────────────────
+    # â”€â”€ Handle --update early â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if do_update:
         from gralph.update import self_update
 
         self_update()
         ctx.exit(0)
 
-    # ── Build config ─────────────────────────────────────────────
+    # â”€â”€ Build config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     engine_name, provider_list = _resolve_cli_engine_and_providers(engine_flags, providers)
 
     effective_sequential = sequential or not parallel
@@ -251,22 +251,26 @@ def main(
         verbose=verbose,
     )
 
-    # ── Handle --init ────────────────────────────────────────────
+    # â”€â”€ Handle --init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if cfg.skills_init:
-        from gralph.skills import ensure_skills
+        from gralph.skills import MissingSkillsError, ensure_skills
 
-        ensure_skills(cfg, mode="install")
+        try:
+            ensure_skills(cfg, mode="install")
+        except MissingSkillsError as e:
+            glog.error(str(e))
+            ctx.exit(1)
         ctx.exit(0)
 
-    # ── If a subcommand (e.g. prd) was invoked, skip the pipeline ─
+    # â”€â”€ If a subcommand (e.g. prd) was invoked, skip the pipeline â”€
     if ctx.invoked_subcommand is not None:
         return
 
-    # ── Main pipeline ────────────────────────────────────────────
+    # â”€â”€ Main pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _run_pipeline(cfg)
 
 
-# ── Subcommand: prd ──────────────────────────────────────────────
+# â”€â”€ Subcommand: prd â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @main.command()
@@ -321,14 +325,7 @@ def _run_prd_generation(
         glog.error(err)
         sys.exit(1)
 
-    skill_path = _find_prd_skill(cfg.ai_engine)
-    if skill_path:
-        skill_content = read_text(skill_path)
-        skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
-        glog.debug(f"Using PRD skill: {skill_path}")
-    else:
-        glog.warn("PRD skill not found; using built-in prompt. Run 'gralph --init' to install skills.")
-        skill_instruction = ""
+    skill_instruction = _load_required_prd_skill_instruction(cfg.ai_engine)
 
     tasks_dir = invocation_dir / "tasks"
     tasks_dir.mkdir(exist_ok=True)
@@ -342,14 +339,14 @@ def _run_prd_generation(
         _run_prd_single(cfg, engine, invocation_dir, description, save_path_str, output_path, tasks_dir, write_path_abs)
         return
 
-    # Interactive default: phase 1 — get clarifying questions
-    glog.info(f"Asking clarifying questions with {cfg.ai_engine}…")
+    # Interactive default: phase 1 â€” get clarifying questions
+    glog.info(f"Asking clarifying questions with {cfg.ai_engine}â€¦")
     questions_prompt = f"""{skill_instruction}
 
 Feature request from the user:
 {description}
 
-OUTPUT ONLY 3-5 CLARIFYING QUESTIONS (Step 1 in the skill). Use the format with numbered questions and lettered options (A, B, C, D). Do NOT write the PRD yet. Do NOT create or modify any files — output your response only in your reply. After the last question, output a blank line and then this exact line: ---END_QUESTIONS---"""
+OUTPUT ONLY 3-5 CLARIFYING QUESTIONS (Step 1 in the skill). Use the format with numbered questions and lettered options (A, B, C, D). Do NOT write the PRD yet. Do NOT create or modify any files â€” output your response only in your reply. After the last question, output a blank line and then this exact line: ---END_QUESTIONS---"""
 
     result1 = _run_engine_with_rate_limit_retry(
         cfg,
@@ -384,7 +381,7 @@ OUTPUT ONLY 3-5 CLARIFYING QUESTIONS (Step 1 in the skill). Use the format with 
         glog.warn("No questions returned; generating PRD with inferred defaults.")
         user_answers = ""
 
-    # Phase 2 — generate PRD incorporating answers
+    # Phase 2 â€” generate PRD incorporating answers
     prompt2 = _build_prd_phase2_prompt(
         skill_instruction=skill_instruction,
         description=description,
@@ -465,17 +462,11 @@ def _run_prd_single(
 ) -> None:
     """Run a single PRD generation (no questions). Uses prompt if given, else builds no-questions prompt."""
     from gralph import log as glog
-    from gralph.prd import extract_prd_id, slugify
+    from gralph.prd import extract_prd_id, inject_prd_id, normalize_prd_id, slugify
 
     if prompt is None:
-        skill_path = _find_prd_skill(cfg.ai_engine)
-        if skill_path:
-            skill_content = read_text(skill_path)
-            skill_instruction = f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
-            glog.debug(f"Using PRD skill: {skill_path}")
-        else:
-            skill_instruction = ""
-        prompt = f"""Follow these instructions for creating the PRD:\n\n{skill_instruction}
+        skill_instruction = _load_required_prd_skill_instruction(cfg.ai_engine)
+        prompt = f"""{skill_instruction}
 
 Feature request from the user:
 {description}
@@ -493,7 +484,7 @@ MANDATORY CONTENT TO INCLUDE IN THE PRD:
 4. Save the PRD to: {save_path_str}
 5. Do NOT implement anything - only create the PRD file."""
 
-    glog.info(f"Generating PRD with {cfg.ai_engine}…")
+    glog.info(f"Generating PRD with {cfg.ai_engine}â€¦")
     glog.info(f"Output: {write_path_abs}")
 
     result = _run_engine_with_rate_limit_retry(
@@ -516,12 +507,12 @@ MANDATORY CONTENT TO INCLUDE IN THE PRD:
         prd_id = extract_prd_id(out)
         if not prd_id:
             prd_id = slugify(description)
-            glog.warn(f"PRD created at {out} but missing prd-id. Adding it…")
-            _inject_prd_id(out, prd_id)
+            glog.warn(f"PRD created at {out} but missing prd-id. Adding itâ€¦")
+            inject_prd_id(out, prd_id)
         if not output_path:
             safe_id = slugify(prd_id)
             if safe_id != prd_id:
-                _normalize_prd_id_in_file(out, safe_id)
+                normalize_prd_id(out, safe_id)
             final_path = tasks_dir / f"prd-{safe_id}.md"
             if final_path.resolve() != out.resolve():
                 # os.replace overwrites destination if it exists (required on Windows)
@@ -603,18 +594,9 @@ def _run_engine_with_rate_limit_retry(
 
 
 def _looks_like_rate_limit_error(msg: str) -> bool:
-    if not msg:
-        return False
-    lower = msg.lower()
-    patterns = [
-        "rate limit",
-        "rate_limit",
-        "you've hit your limit",
-        "quota",
-        "429",
-        "too many requests",
-    ]
-    return any(p in lower for p in patterns)
+    from gralph.engine_errors import looks_like_rate_limit
+
+    return looks_like_rate_limit(msg)
 
 
 def _has_meaningful_engine_text(text: str) -> bool:
@@ -651,86 +633,23 @@ def _looks_like_prd_text(text: str) -> bool:
     return "prd-id:" in head
 
 
-def _find_prd_skill(engine_name: str) -> Path | None:
-    """Locate the PRD skill file for the given engine."""
-    from gralph.config import resolve_repo_root
+def _load_required_prd_skill_instruction(engine_name: str) -> str:
+    """Load PRD skill instructions for the selected engine or exit."""
+    from gralph import log as glog
+    from gralph.skills import find_skill_file
 
-    repo = resolve_repo_root()
-    home = Path.home()
-    bundled = repo / "skills/prd/SKILL.md"
+    skill_path = find_skill_file(engine_name, "prd")
+    if skill_path is None:
+        glog.error(f"Missing required 'prd' skill for {engine_name}. Run 'gralph --init'.")
+        sys.exit(1)
 
-    candidates: list[Path] = []
-    match engine_name:
-        case "claude":
-            candidates = [
-                repo / ".claude/skills/prd/SKILL.md",
-                bundled,
-                home / ".claude/skills/prd/SKILL.md",
-            ]
-        case "codex":
-            candidates = [
-                repo / ".codex/skills/prd/SKILL.md",
-                bundled,
-                home / ".codex/skills/prd/SKILL.md",
-            ]
-        case "opencode":
-            candidates = [
-                repo / ".opencode/skill/prd/SKILL.md",
-                bundled,
-                home / ".config/opencode/skill/prd/SKILL.md",
-            ]
-        case "cursor":
-            candidates = [
-                repo / ".cursor/rules/prd.mdc",
-                repo / ".cursor/commands/prd.md",
-                bundled,
-            ]
-        case "gemini":
-            candidates = [
-                repo / ".gemini/skills/prd/SKILL.md",
-                bundled,
-                home / ".gemini/skills/prd/SKILL.md",
-            ]
-        case _:
-            candidates = [bundled]
-
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
-
-
-def _inject_prd_id(prd_file: Path, slug: str) -> None:
-    """Insert a prd-id line after the title if missing."""
-    content = read_text(prd_file)
-    lines = content.splitlines(keepends=True)
-
-    for i, line in enumerate(lines):
-        if line.startswith("# "):
-            # Insert prd-id after the title line
-            prd_id_line = f"\nprd-id: {slug}\n"
-            lines.insert(i + 1, prd_id_line)
-            break
-    else:
-        # No title found — prepend
-        lines.insert(0, f"prd-id: {slug}\n\n")
-
-    write_text(prd_file, "".join(lines))
-
-
-def _normalize_prd_id_in_file(prd_file: Path, safe_id: str) -> None:
-    """Replace existing prd-id line with the normalized (URL-safe) id."""
-    content = read_text(prd_file)
-    lines = content.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if line.startswith("prd-id:"):
-            lines[i] = f"prd-id: {safe_id}\n"
-            break
-    write_text(prd_file, "".join(lines))
+    skill_content = read_text(skill_path)
+    glog.debug(f"Using PRD skill: {skill_path}")
+    return f"""Follow these instructions for creating the PRD:\n\n{skill_content}"""
 
 
 def _run_pipeline(cfg: Config) -> None:
-    """Full GRALPH pipeline: PRD → tasks → schedule → execute → report."""
+    """Full GRALPH pipeline: PRD â†’ tasks â†’ schedule â†’ execute â†’ report."""
     from gralph import log as glog
     from gralph.artifacts import init_artifacts_dir, show_summary
     from gralph.engines.registry import get_engine
@@ -746,18 +665,19 @@ def _run_pipeline(cfg: Config) -> None:
     from gralph.prd import extract_prd_id, setup_run_dir, find_prd_file, copy_prd_to_run_dir
     from gralph.runner import Runner
     from gralph.scheduler import Scheduler
-    from gralph.skills import ensure_skills
+    from gralph.skills import MissingSkillsError, ensure_skills
+    from gralph.tasks.generator import generate_tasks_yaml
     from gralph.tasks.io import load_task_file
     from gralph.tasks.validate import validate_and_report
 
-    # ── Pre-flight: engine check ─────────────────────────────────
+    # â”€â”€ Pre-flight: engine check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     engine = get_engine(cfg.ai_engine, opencode_model=cfg.opencode_model)
     err = engine.check_available()
     if err:
         glog.error(err)
         sys.exit(1)
 
-    # ── gh check if --create-pr ──────────────────────────────────
+    # â”€â”€ gh check if --create-pr â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if cfg.create_pr:
         import shutil
 
@@ -765,7 +685,13 @@ def _run_pipeline(cfg: Config) -> None:
             glog.error("GitHub CLI (gh) is required for --create-pr. Install from https://cli.github.com/")
             sys.exit(1)
 
-    # ── PRD / resume handling ────────────────────────────────────
+    try:
+        ensure_skills(cfg, mode="require")
+    except MissingSkillsError as e:
+        glog.error(str(e))
+        sys.exit(1)
+
+    # â”€â”€ PRD / resume handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if cfg.resume_prd_id:
         cfg.prd_id = cfg.resume_prd_id
         cfg.prd_run_dir = f"artifacts/prd/{cfg.prd_id}"
@@ -804,35 +730,46 @@ def _run_pipeline(cfg: Config) -> None:
         if tasks_path.is_file():
             glog.info(f"Resuming existing run for {cfg.prd_id}")
         else:
-            glog.info(f"Generating tasks.yaml for {cfg.prd_id}…")
-            _run_metadata_agent(engine, prd_path, tasks_path)
+            glog.info(f"Generating tasks.yaml for {cfg.prd_id}â€¦")
+            metadata_result = generate_tasks_yaml(engine, prd_path, tasks_path)
+            if not tasks_path.is_file():
+                glog.error(f"Metadata agent failed to create {tasks_path}")
+                if metadata_result.error:
+                    glog.error(f"Agent error: {metadata_result.error}")
+                sys.exit(1)
+            glog.success(f"Generated {tasks_path}")
 
         cfg.prd_file = str(tasks_path)
 
-    # ── Load and validate tasks.yaml ─────────────────────────────
+    # â”€â”€ Load and validate tasks.yaml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     tf = load_task_file(Path(cfg.prd_file))
     if not validate_and_report(tf, base_dir=Path.cwd()):
         sys.exit(1)
 
-    # ── Skills check ─────────────────────────────────────────────
-    ensure_skills(cfg, mode="warn")
-
-    # ── Git state cleanup ────────────────────────────────────────
+    # â”€â”€ Git state cleanup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ensure_clean_git_state()
     cleanup_stale_agent_branches()
 
-    # ── Dry run ──────────────────────────────────────────────────
+    # â”€â”€ Dry run â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if cfg.dry_run:
         _show_dry_run(cfg, tf)
         sys.exit(0)
 
-    # ── Ensure run branch ────────────────────────────────────────
+    # â”€â”€ Ensure run branch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if tf.branch_name:
-        base = cfg.base_branch or current_branch()
+        try:
+            base = cfg.base_branch or current_branch()
+        except RuntimeError as e:
+            glog.error(str(e))
+            sys.exit(1)
         cfg.base_branch = ensure_run_branch(tf.branch_name, base)
 
     if cfg.branch_per_task and not cfg.base_branch:
-        cfg.base_branch = current_branch()
+        try:
+            cfg.base_branch = current_branch()
+        except RuntimeError as e:
+            glog.error(str(e))
+            sys.exit(1)
 
     if has_dirty_worktree():
         entries = [
@@ -850,19 +787,19 @@ def _run_pipeline(cfg: Config) -> None:
         )
         glog.console.print(f"[dim]Dirty entries: {', '.join(entries[:8])}[/dim]")
         sys.exit(1)
-    # ── Banner ───────────────────────────────────────────────────
+    # â”€â”€ Banner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _show_banner(cfg)
 
-    # ── Init artifacts dir ───────────────────────────────────────
+    # â”€â”€ Init artifacts dir â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     init_artifacts_dir(cfg)
 
-    # ── Create progress.txt if missing ───────────────────────────
+    # â”€â”€ Create progress.txt if missing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     progress = Path(cfg.artifacts_dir or ".") / "progress.txt"
     if not progress.is_file():
         progress.parent.mkdir(parents=True, exist_ok=True)
         progress.touch()
 
-    # ── Run ──────────────────────────────────────────────────────
+    # â”€â”€ Run â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     scheduler = Scheduler(tf)
     runner = Runner(cfg, tf, engine, scheduler)
 
@@ -887,74 +824,14 @@ def _run_pipeline(cfg: Config) -> None:
     notify_done()
 
 
-def _try_extract_tasks_yaml_from_result(text: str, output: Path) -> bool:
-    """If result.text contains valid tasks.yaml structure, write it. Return True if written."""
-    if not text or "branchName:" not in text or "tasks:" not in text:
-        return False
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if "branchName:" in line:
-            yaml_content = "\n".join(lines[i:]).strip()
-            if "tasks:" in yaml_content:
-                output.parent.mkdir(parents=True, exist_ok=True)
-                write_text(output, yaml_content)
-                return True
-    return False
-
-
 def _run_metadata_agent(engine: object, prd_path: Path, output: Path) -> None:
-    """Run the metadata agent to generate tasks.yaml from a PRD."""
+    """Compatibility wrapper for generating ``tasks.yaml`` from a PRD."""
     from gralph import log as glog
     from gralph.engines.base import EngineBase
+    from gralph.tasks.generator import generate_tasks_yaml
 
     assert isinstance(engine, EngineBase)
-
-    # Inline PRD content so all engines receive it (some don't support @path)
-    prd_content = read_text(prd_path)
-
-    prompt = f"""Convert this PRD to tasks.yaml format.
-
-PRD content:
----
-{prd_content}
----
-
-Create a tasks.yaml file with this EXACT format:
-
-branchName: gralph/your-feature-name
-tasks:
-  - id: TASK-001
-    title: "First task description"
-    completed: false
-    dependsOn: []
-    mutex: []
-  - id: TASK-002
-    title: "Second task description"
-    completed: false
-    dependsOn: ["TASK-001"]
-    mutex: []
-
-Rules:
-1. Each task gets a unique ID (TASK-001, TASK-002, etc.)
-2. Order tasks by dependency (database first, then backend, then frontend)
-3. Use dependsOn to link tasks that must run after others
-4. Use mutex for shared resources: db-migrations, lockfile, router, global-config
-5. Set branchName to a short kebab-case feature name prefixed with "gralph/" (based on the PRD)
-6. Keep tasks small and focused (completable in one session)
-7. Include at least one early task that establishes or validates repository structure before feature implementation tasks.
-8. Include explicit automated testing tasks (unit/integration/e2e as relevant). Tests are mandatory for implementation work.
-9. Include an explicit documentation task to update README.md (and docs/ files when applicable) for the implemented behavior.
-10. Use dependencies so structure tasks run first and docs tasks run after implementation and tests.
-
-Save the file as {output}.
-Do NOT implement anything - only create the tasks.yaml file."""
-
-    cwd = Path.cwd()
-    result = engine.run_sync(prompt, cwd=cwd)
-
-    if not output.is_file():
-        # Fallback: some engines output YAML in result.text instead of writing to disk
-        _try_extract_tasks_yaml_from_result(result.text, output)
+    result = generate_tasks_yaml(engine, prd_path, output)
     if not output.is_file():
         glog.error(f"Metadata agent failed to create {output}")
         if result.error:
@@ -972,7 +849,7 @@ def _show_dry_run(cfg: Config, tf: object) -> None:
 
     glog.console.print("")
     glog.console.print("[bold]============================================[/bold]")
-    glog.console.print("[bold]GRALPH[/bold] — Dry run (no execution)")
+    glog.console.print("[bold]GRALPH[/bold] â€” Dry run (no execution)")
 
     if tf.branch_name:
         glog.console.print(f"Run branch: [cyan]{tf.branch_name}[/cyan]")
@@ -1007,7 +884,7 @@ def _show_banner(cfg: Config) -> None:
     }.get(cfg.ai_engine, cfg.ai_engine)
 
     glog.console.print("[bold]============================================[/bold]")
-    glog.console.print("[bold]GRALPH[/bold] — Running until PRD is complete")
+    glog.console.print("[bold]GRALPH[/bold] â€” Running until PRD is complete")
     glog.console.print(f"Engine: {engine_display}")
     glog.console.print(
         f"PRD: [cyan]{cfg.prd_id}[/cyan] ({cfg.prd_run_dir})"
@@ -1037,4 +914,5 @@ def _show_banner(cfg: Config) -> None:
         glog.console.print(f"Mode: [yellow]{' '.join(parts)}[/yellow]")
 
     glog.console.print("[bold]============================================[/bold]")
+
 

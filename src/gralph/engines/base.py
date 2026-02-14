@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from gralph.engine_errors import looks_like_policy_block, looks_like_rate_limit
 from gralph.io_utils import open_text
 
 
@@ -116,6 +117,69 @@ class EngineBase(ABC):
 
         return result
 
+    def _run_completed_subprocess(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout: int | None = None,
+        input_text: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str] | EngineResult:
+        """Run a command with ``subprocess.run`` and map common process failures."""
+        try:
+            return subprocess.run(
+                cmd,
+                input=input_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return EngineResult(error="timeout", return_code=-1)
+        except FileNotFoundError:
+            return EngineResult(error=f"{cmd[0]} not found", return_code=-1)
+
+    def _finalize_completed_run(
+        self,
+        *,
+        proc: subprocess.CompletedProcess[str],
+        result: EngineResult,
+        start_monotonic: float,
+        log_file: Path | None,
+        check_output_errors: bool = True,
+    ) -> EngineResult:
+        """Finalize a parsed result from a completed subprocess call."""
+        elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
+
+        if log_file:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open_text(log_file, "a") as f:
+                if proc.stderr:
+                    f.write(proc.stderr)
+
+        result.return_code = proc.returncode
+        if not result.duration_ms:
+            result.duration_ms = elapsed_ms
+
+        if check_output_errors:
+            error = self._check_errors(proc.stdout or "")
+            if error and not result.error:
+                result.error = error
+
+        if proc.returncode != 0 and not result.error:
+            stderr = (proc.stderr or "").strip()
+            if stderr:
+                result.error = stderr.splitlines()[0]
+            else:
+                result.error = f"exit code {proc.returncode}"
+
+        return result
+
     @staticmethod
     def _communicate_with_interrupts(
         proc: subprocess.Popen[str],
@@ -174,32 +238,53 @@ class EngineBase(ABC):
     ) -> subprocess.Popen[str]:
         """Launch the engine asynchronously, returning the Popen handle."""
         cmd = self.build_cmd(prompt)
+        return self._launch_async_cmd(
+            cmd,
+            cwd=cwd,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+        )
+
+    def _launch_async_cmd(
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        stdout_file: Path | None = None,
+        stderr_file: Path | None = None,
+        stdin_text: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.Popen[str]:
+        """Launch a subprocess with optional stdin text for async engines."""
+        stdin = subprocess.PIPE if stdin_text is not None else None
 
         stdout_fh: IO[str] | int = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
         stderr_fh: IO[str] | int = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
         creationflags = self._creationflags()
 
-        if creationflags:
-            return subprocess.Popen(
-                cmd,
-                stdout=stdout_fh,
-                stderr=stderr_fh,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=cwd,
-                creationflags=creationflags,
-            )
+        popen_kwargs: dict[str, object] = {
+            "stdin": stdin,
+            "stdout": stdout_fh,
+            "stderr": stderr_fh,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "cwd": cwd,
+        }
+        if env is not None:
+            popen_kwargs["env"] = env
 
-        return subprocess.Popen(
-            cmd,
-            stdout=stdout_fh,
-            stderr=stderr_fh,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=cwd,
-        )
+        if creationflags:
+            popen_kwargs["creationflags"] = creationflags
+
+        proc = subprocess.Popen(cmd, **popen_kwargs)  # type: ignore[arg-type]
+        if stdin_text is not None and proc.stdin:
+            try:
+                proc.stdin.write(stdin_text)
+                proc.stdin.close()
+            except OSError:
+                pass
+        return proc
 
     @staticmethod
     def _creationflags() -> int:
@@ -233,18 +318,16 @@ class EngineBase(ABC):
             if isinstance(err, dict):
                 msg = str(err.get("message", "")).strip()
                 code = str(err.get("type", "") or err.get("code", "")).strip().lower()
-                if "rate_limit" in code or "rate limit" in code or "quota" in code:
+                if looks_like_rate_limit(code):
                     return msg or "Rate limit exceeded"
                 if msg:
                     return msg
 
             if isinstance(err, str):
                 err_lower = err.lower()
-                if "blocked by policy" in err_lower:
+                if looks_like_policy_block(err_lower):
                     return "Blocked by policy"
-                if "rate_limit" in err_lower or "rate limit" in err_lower or "quota" in err_lower:
-                    return "Rate limit exceeded"
-                if "hit your limit" in err_lower:
+                if looks_like_rate_limit(err_lower):
                     return "Rate limit exceeded"
                 if err.strip():
                     return err.strip()
@@ -258,11 +341,9 @@ class EngineBase(ABC):
 
                 if msg:
                     msg_lower = msg.lower()
-                    if "blocked by policy" in msg_lower:
+                    if looks_like_policy_block(msg_lower):
                         return "Blocked by policy"
-                    if "rate_limit" in msg_lower or "rate limit" in msg_lower or "quota" in msg_lower:
-                        return "Rate limit exceeded"
-                    if "hit your limit" in msg_lower:
+                    if looks_like_rate_limit(msg_lower):
                         return "Rate limit exceeded"
                     return msg
                 return "Unknown error"
