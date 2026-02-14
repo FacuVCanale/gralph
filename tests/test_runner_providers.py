@@ -472,7 +472,13 @@ def test_internal_failure_does_not_rotate_provider_on_failure(git_repo: Path) ->
 
 def test_task_prompt_includes_windows_powershell_guardrails() -> None:
     with patch("gralph.runner.platform.system", return_value="Windows"):
-        prompt = _build_task_prompt("TASK-001", "Sample task", "src/app.ts")
+        prompt = _build_task_prompt(
+            "TASK-001",
+            "Sample task",
+            "src/app.ts",
+            skip_tests=False,
+            skip_lint=False,
+        )
 
     assert "SHELL COMPATIBILITY (Windows PowerShell):" in prompt
     assert "Do NOT use '&&' between commands" in prompt

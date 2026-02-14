@@ -6,7 +6,6 @@ import re
 import shutil
 from pathlib import Path
 
-from gralph import log
 from gralph.io_utils import read_text
 
 

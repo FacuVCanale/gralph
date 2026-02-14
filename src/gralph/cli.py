@@ -9,12 +9,16 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from gralph import __version__
 from gralph.config import Config, DEFAULT_PROVIDERS
 from gralph.io_utils import read_text, write_text
+
+if TYPE_CHECKING:
+    from gralph.engines.base import EngineBase, EngineResult
 
 
 # ── Custom Click group that handles PS1 aliases ──────────────────────
@@ -219,15 +223,17 @@ def main(
     # ── Build config ─────────────────────────────────────────────
     engine_name, provider_list = _resolve_cli_engine_and_providers(engine_flags, providers)
 
+    effective_sequential = sequential or not parallel
+
     cfg = Config(
         ai_engine=engine_name,
         providers=provider_list,
         opencode_model=opencode_model,
         skip_tests=no_tests or fast,
         skip_lint=no_lint or fast,
-        sequential=sequential,
-        parallel=not sequential,
-        max_parallel=max_parallel if not sequential else 1,
+        sequential=effective_sequential,
+        parallel=not effective_sequential,
+        max_parallel=max_parallel if not effective_sequential else 1,
         max_iterations=max_iterations,
         max_retries=max_retries,
         retry_delay=retry_delay,
@@ -307,7 +313,6 @@ def _run_prd_generation(
     """Run an AI engine to generate a PRD from a feature description."""
     from gralph import log as glog
     from gralph.engines.registry import get_engine
-    from gralph.prd import extract_prd_id, slugify
 
     invocation_dir = Path.cwd()
     engine = get_engine(cfg.ai_engine)
@@ -442,7 +447,7 @@ Feature request from the user:
 
 def _run_prd_single(
     cfg: Config,
-    engine: "EngineBase",
+    engine: EngineBase,
     invocation_dir: Path,
     description: str,
     save_path_str: str,
@@ -532,13 +537,13 @@ IMPORTANT RULES:
 
 def _run_engine_with_rate_limit_retry(
     cfg: Config,
-    engine: "EngineBase",
+    engine: EngineBase,
     prompt: str,
     *,
     cwd: Path,
     stage: str,
     max_attempts: int = 3,
-) -> "EngineResult":
+) -> EngineResult:
     """Run an engine call, retrying short rate-limit bursts with exponential backoff."""
     from gralph import log as glog
 
@@ -605,7 +610,7 @@ def _has_meaningful_engine_text(text: str) -> bool:
     return bool(stripped and stripped != "Task completed")
 
 
-def _looks_like_user_interrupt_result(result: "EngineResult") -> bool:
+def _looks_like_user_interrupt_result(result: EngineResult) -> bool:
     interrupt_codes = {130, -130, -1073741510, 3221225786}
     if result.return_code in interrupt_codes:
         return True
@@ -716,7 +721,6 @@ def _run_pipeline(cfg: Config) -> None:
     """Full GRALPH pipeline: PRD → tasks → schedule → execute → report."""
     from gralph import log as glog
     from gralph.artifacts import init_artifacts_dir, show_summary
-    from gralph.config import resolve_repo_root
     from gralph.engines.registry import get_engine
     from gralph.git_ops import (
         current_branch,

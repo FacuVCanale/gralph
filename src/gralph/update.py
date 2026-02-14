@@ -1,4 +1,4 @@
-"""Self-update strategy for GRALPH."""
+﻿"""Self-update strategy for GRALPH."""
 
 from __future__ import annotations
 
@@ -40,49 +40,56 @@ def self_update() -> None:
         return
 
     # 1. Git pull
-    log.info(f"Pulling latest from {install_dir}…")
+    log.info(f"Pulling latest from {install_dir}...")
     before = subprocess.run(
         ["git", "-C", str(install_dir), "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
 
-    r = subprocess.run(
+    pull_result = subprocess.run(
         ["git", "-C", str(install_dir), "pull", "--ff-only"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    if r.returncode != 0:
-        log.warn("Fast-forward failed, resetting to origin/main…")
-        subprocess.run(
-            ["git", "-C", str(install_dir), "fetch", "origin"],
-            capture_output=True,
+    if pull_result.returncode != 0:
+        details = (pull_result.stderr or pull_result.stdout or "").strip()
+        log.warn("Fast-forward update failed. Skipping destructive reset.")
+        if details:
+            log.console.print(f"[dim]{details.splitlines()[0]}[/dim]")
+        log.console.print(
+            "  Resolve local/diverged changes manually, then rerun `gralph --update`."
         )
-        subprocess.run(
-            ["git", "-C", str(install_dir), "reset", "--hard", "origin/main"],
-            capture_output=True,
-        )
+        return
 
     after = subprocess.run(
         ["git", "-C", str(install_dir), "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
 
     if before == after:
         log.info(f"Already up to date ({after})")
     else:
-        log.success(f"Updated {before} → {after}")
+        log.success(f"Updated {before} -> {after}")
 
     # 2. Reinstall via pipx
     if shutil.which("pipx"):
-        log.info("Reinstalling via pipx…")
-        r = subprocess.run(
+        log.info("Reinstalling via pipx...")
+        reinstall_result = subprocess.run(
             ["pipx", "install", str(install_dir), "--force"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        if r.returncode == 0:
+        if reinstall_result.returncode == 0:
             log.success("Reinstalled gralph CLI")
         else:
-            log.warn(f"pipx install failed: {r.stderr.strip()}")
+            log.warn(f"pipx install failed: {reinstall_result.stderr.strip()}")
             log.console.print(f"  Try manually: pipx install {install_dir} --force")
     else:
-        log.info("pipx not found — skipping reinstall.")
+        log.info("pipx not found - skipping reinstall.")
         log.console.print(f"  Run manually: pip install {install_dir}")

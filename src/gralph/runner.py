@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import platform
 import signal
 import shutil
@@ -12,6 +13,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import FrameType
 
 from gralph import log
 from gralph.config import Config
@@ -30,7 +32,7 @@ from gralph.git_ops import (
     merge_abort,
     delete_branch,
 )
-from gralph.scheduler import Scheduler, TaskState
+from gralph.scheduler import Scheduler
 from gralph.io_utils import read_text, write_text
 from gralph.tasks.model import TaskFile
 from gralph.tasks.io import mark_task_complete_in_file
@@ -53,6 +55,7 @@ class AgentSlot:
     engine: EngineBase | None = None
     started_at: float = field(default_factory=time.monotonic)
     last_activity: float = field(default_factory=time.monotonic)
+    last_log_mtime: float = 0.0
 
 
 def _task_shell_rules() -> str:
@@ -72,8 +75,21 @@ def _task_shell_rules() -> str:
     )
 
 
-def _build_task_prompt(task_id: str, task_title: str, touches: str) -> str:
+def _build_task_prompt(
+    task_id: str,
+    task_title: str,
+    touches: str,
+    *,
+    skip_tests: bool,
+    skip_lint: bool,
+) -> str:
     shell_rules = _task_shell_rules()
+    quality_rules: list[str] = []
+    if skip_tests:
+        quality_rules.append("- Skip full test suite execution unless strictly needed for this task.")
+    if skip_lint:
+        quality_rules.append("- Skip full lint execution unless strictly needed for this task.")
+    quality_block = "\n".join(quality_rules)
     return f"""You are working on a specific task. Focus ONLY on this task:
 
 TASK ID: {task_id}
@@ -94,6 +110,7 @@ CRITICAL RULES:
 - Do NOT just update progress.txt. You MUST write the actual code.
 - Do NOT commit tasks.yaml or progress.txt.
 - If the file does not exist, CREATE IT.
+{quality_block}
 
 Focus only on implementing: {task_title}"""
 
@@ -274,7 +291,7 @@ def _extract_error_from_logs(log_file: Path, stream_file: Path | None = None) ->
     """Get the most relevant error line from stderr or stdout logs."""
     if log_file.is_file():
         lines = read_text(log_file, errors="replace").splitlines()
-        non_debug = [l for l in lines if not l.startswith("[DEBUG]") and l.strip()]
+        non_debug = [line_text for line_text in lines if not line_text.startswith("[DEBUG]") and line_text.strip()]
         if non_debug:
             return non_debug[-1]
         if lines:
@@ -394,9 +411,13 @@ class Runner:
         self.completed_task_ids: list[str] = []
         self.retry_counts: dict[str, int] = {}
         self.retry_after: dict[str, float] = {}
+        self._external_failure_since: dict[str, float] = {}
         self._stop_requested = False
         self._interrupt_count = 0
-        self._orig_signal_handlers: dict[int, object] = {}
+        self._orig_signal_handlers: dict[
+            signal.Signals,
+            int | Callable[[int, FrameType | None], object] | None,
+        ] = {}
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
 
@@ -492,8 +513,6 @@ class Runner:
                 shutil.rmtree(worktree_base, ignore_errors=True)
 
     def _main_loop(self, original_dir: Path, worktree_base: Path) -> bool:
-        external_fail = False
-
         while True:
             if self._stop_requested:
                 self._abort_all_active(original_dir)
@@ -511,24 +530,34 @@ class Runner:
             running = self.sched.count_running()
 
             if pending == 0 and running == 0:
+                failed = self.sched.count_failed()
+                if failed > 0:
+                    log.error(
+                        "Workflow finished with failed tasks. "
+                        f"{failed} task(s) failed."
+                    )
+                    return False
                 break
 
             if self.sched.check_deadlock():
                 self._report_deadlock()
                 return False
 
+            max_reached = self.cfg.max_iterations > 0 and self.iteration >= self.cfg.max_iterations
+            if max_reached and pending > 0 and running == 0:
+                log.warn(
+                    "Reached max iterations "
+                    f"({self.cfg.max_iterations}) with {pending} pending task(s). Stopping run."
+                )
+                return False
+
             # 3. Launch new tasks
             slots = self.cfg.max_parallel - running
-            if slots > 0:
+            if slots > 0 and not max_reached:
                 ready = self._get_ready_tasks()
                 to_start = ready[:slots]
                 for task_id in to_start:
                     self._launch_agent(task_id, original_dir, worktree_base)
-
-            # 4. Check max iterations
-            if self.cfg.max_iterations > 0 and self.iteration >= self.cfg.max_iterations:
-                log.warn(f"Reached max iterations ({self.cfg.max_iterations})")
-                break
 
             time.sleep(0.5)
 
@@ -537,7 +566,7 @@ class Runner:
     def _install_signal_handlers(self) -> None:
         """Install handlers so Ctrl-C can stop long-running parallel work."""
         self._orig_signal_handlers = {}
-        signals_to_handle = [signal.SIGINT]
+        signals_to_handle: list[signal.Signals] = [signal.SIGINT]
         if hasattr(signal, "SIGBREAK"):
             signals_to_handle.append(signal.SIGBREAK)
         if hasattr(signal, "SIGTERM"):
@@ -558,13 +587,20 @@ class Runner:
                 continue
         self._orig_signal_handlers = {}
 
-    def _on_signal(self, signum: int, _frame: object) -> None:
+    def _on_signal(self, signum: int, _frame: FrameType | None) -> None:
         self._interrupt_count += 1
         self._stop_requested = True
         if self._interrupt_count == 1:
             log.warn(f"Interrupt received (signal {signum}). Stopping agents...")
         else:
             log.warn(f"Interrupt received again (signal {signum}). Forcing stop...")
+
+    @staticmethod
+    def _new_temp_file(prefix: str) -> Path:
+        """Create a temporary file path safely and close the open descriptor."""
+        fd, raw_path = tempfile.mkstemp(prefix=prefix)
+        os.close(fd)
+        return Path(raw_path)
 
     def _abort_all_active(self, original_dir: Path) -> None:
         """Kill active agents, write failure reports, and clean up worktrees."""
@@ -654,10 +690,10 @@ class Runner:
         )
 
         # Create temp files for IPC
-        status_file = Path(tempfile.mktemp(prefix=f"gralph-status-{task_id}-"))
-        output_file = Path(tempfile.mktemp(prefix=f"gralph-output-{task_id}-"))
-        log_file = Path(tempfile.mktemp(prefix=f"gralph-log-{task_id}-"))
-        stream_file = Path(tempfile.mktemp(prefix=f"gralph-stream-{task_id}-"))
+        status_file = self._new_temp_file(prefix=f"gralph-status-{task_id}-")
+        output_file = self._new_temp_file(prefix=f"gralph-output-{task_id}-")
+        log_file = self._new_temp_file(prefix=f"gralph-log-{task_id}-")
+        stream_file = self._new_temp_file(prefix=f"gralph-stream-{task_id}-")
 
         write_text(status_file, "setting up")
 
@@ -684,7 +720,13 @@ class Runner:
         # Create progress.txt in worktree root
         (wt_dir / "progress.txt").touch()
 
-        prompt = _build_task_prompt(task_id, title, touches)
+        prompt = _build_task_prompt(
+            task_id,
+            title,
+            touches,
+            skip_tests=self.cfg.skip_tests,
+            skip_lint=self.cfg.skip_lint,
+        )
         write_text(status_file, "running")
 
         # Launch engine async
@@ -737,8 +779,9 @@ class Runner:
                 # Still running — check for stall
                 if slot.log_file.is_file():
                     mtime = slot.log_file.stat().st_mtime
-                    if mtime > slot.last_activity:
-                        slot.last_activity = mtime
+                    if mtime > slot.last_log_mtime:
+                        slot.last_log_mtime = mtime
+                        slot.last_activity = time.monotonic()
 
                 idle = time.monotonic() - slot.last_activity
                 if idle > self.cfg.stalled_timeout:
@@ -793,6 +836,8 @@ class Runner:
     def _handle_success(
         self, slot: AgentSlot, original_dir: Path, title: str, commits: int
     ) -> None:
+        self._external_failure_since.pop(slot.task_id, None)
+
         # If worktree has uncommitted changes, auto-commit
         if has_dirty_worktree(cwd=slot.worktree_dir):
             add_and_commit("Auto-commit remaining changes", cwd=slot.worktree_dir)
@@ -870,7 +915,8 @@ class Runner:
                 log_file=slot.log_file,
             )
             if delete_merged_branch:
-                delete_branch(slot.branch_name, cwd=original_dir)
+                if not self.cfg.branch_per_task:
+                    delete_branch(slot.branch_name, cwd=original_dir)
                 self.completed_branches.append(slot.branch_name)
             return
 
@@ -899,11 +945,21 @@ class Runner:
         retries_used = self.retry_counts.get(slot.task_id, 0)
         attempt = retries_used + 1
         max_attempts = self.cfg.max_retries + 1
+        is_external_failure = _is_external_failure(err_msg)
         should_retry = self._should_retry(err_msg, retries_used)
         provider_switch: tuple[str, str] | None = None
 
+        if should_retry and is_external_failure and self.cfg.external_fail_timeout > 0:
+            first_seen = self._external_failure_since.setdefault(slot.task_id, time.monotonic())
+            elapsed = time.monotonic() - first_seen
+            if elapsed >= self.cfg.external_fail_timeout:
+                should_retry = False
+                err_msg = f"{err_msg} (external failure timeout after {int(elapsed)}s)"
+        elif not should_retry or not is_external_failure:
+            self._external_failure_since.pop(slot.task_id, None)
+
         if should_retry:
-            if allow_provider_switch and _is_external_failure(err_msg):
+            if allow_provider_switch and is_external_failure:
                 provider_switch = self._rotate_provider_for_task(slot.task_id)
             self.retry_counts[slot.task_id] = retries_used + 1
             delay = max(self.cfg.retry_delay, 0)
@@ -921,6 +977,7 @@ class Runner:
             )
         else:
             self.sched.fail_task(slot.task_id)
+            self._external_failure_since.pop(slot.task_id, None)
             log.console.print(f"  [red]x[/red] {title[:45]} ({slot.task_id})")
 
         if err_msg:
@@ -1014,11 +1071,10 @@ class Runner:
     def _report_deadlock(self) -> None:
         # Check if it's a failed-deps situation or a real deadlock
         has_failed = False
-        for tid in self.sched._state:
-            if self.sched.state(tid) == TaskState.PENDING:
-                if self.sched.has_failed_deps(tid):
-                    has_failed = True
-                    break
+        for tid in self.sched.pending_task_ids():
+            if self.sched.has_failed_deps(tid):
+                has_failed = True
+                break
 
         if has_failed:
             log.error("Workflow halted: Dependencies failed, preventing further progress.")
@@ -1027,10 +1083,9 @@ class Runner:
 
         log.console.print("")
         log.console.print("[red]Blocked tasks:[/red]")
-        for tid in self.sched._state:
-            if self.sched.state(tid) == TaskState.PENDING:
-                reason = self.sched.explain_block(tid)
-                log.console.print(f"  {tid}: {reason}")
+        for tid in self.sched.pending_task_ids():
+            reason = self.sched.explain_block(tid)
+            log.console.print(f"  {tid}: {reason}")
 
     def _should_retry(self, err_msg: str, retries_used: int) -> bool:
         """Return True if this error should be retried."""

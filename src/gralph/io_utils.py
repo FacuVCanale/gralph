@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from io import TextIOWrapper
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 PathLike = Path | str
 
@@ -28,7 +27,7 @@ def open_text(
     encoding: str = "utf-8",
     errors: str = "strict",
     **kwargs: Any,
-) -> TextIOWrapper:
+) -> IO[str]:
     """Open path for text I/O with UTF-8 by default. Use for append/write (e.g. log files)."""
-    p = path if isinstance(path, (Path, str)) else Path(path)
-    return open(p, mode, encoding=encoding, errors=errors, **kwargs)
+    p = path if isinstance(path, Path) else Path(path)
+    return p.open(mode, encoding=encoding, errors=errors, **kwargs)

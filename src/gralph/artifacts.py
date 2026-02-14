@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from gralph import log
@@ -16,7 +16,6 @@ from gralph.git_ops import (
     diff_stat,
     merge_no_edit,
     merge_abort,
-    delete_branch,
     conflicted_files,
 )
 from gralph.tasks.model import TaskFile
@@ -77,7 +76,7 @@ Then run:
 git add <files>
 git commit --no-edit"""
 
-    result = engine.run_sync(prompt)
+    engine.run_sync(prompt)
 
     remaining = conflicted_files()
     if remaining:
@@ -203,10 +202,16 @@ def _estimate_cost(engine: str, input_tokens: int, output_tokens: int) -> float:
 
 def _coerce_non_negative_int(value: object) -> int:
     """Best-effort conversion for token counters coming from external objects/mocks."""
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str):
+        try:
+            return max(0, int(value.strip()))
+        except ValueError:
+            return 0
+    return 0
 
 
 # ── Summary ──────────────────────────────────────────────────────────

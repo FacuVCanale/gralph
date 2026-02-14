@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import IO
 
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import open_text
@@ -133,25 +134,39 @@ class GeminiEngine(EngineBase):
         cwd: Path | None = None,
         stdout_file: Path | None = None,
         stderr_file: Path | None = None,
-    ) -> subprocess.Popen:  # type: ignore[type-arg]
+    ) -> subprocess.Popen[str]:
         """Launch Gemini CLI asynchronously, passing long prompts via stdin on Windows."""
         use_stdin = len(prompt) > _STDIN_THRESHOLD or platform.system() == "Windows"
         cmd = self.build_cmd(prompt, use_stdin=use_stdin)
 
-        stdout_fh = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
-        stderr_fh = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
+        stdout_fh: IO[str] | int = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
+        stderr_fh: IO[str] | int = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
+        creationflags = self._creationflags()
 
         if use_stdin:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=stdout_fh,
-                stderr=stderr_fh,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=cwd,
-            )
+            if creationflags:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_fh,
+                    stderr=stderr_fh,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=cwd,
+                    creationflags=creationflags,
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_fh,
+                    stderr=stderr_fh,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=cwd,
+                )
             if proc.stdin:
                 try:
                     proc.stdin.write(prompt)
@@ -159,6 +174,18 @@ class GeminiEngine(EngineBase):
                 except Exception:
                     pass
             return proc
+
+        if creationflags:
+            return subprocess.Popen(
+                cmd,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+                creationflags=creationflags,
+            )
 
         return subprocess.Popen(
             cmd,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from gralph.tasks.model import Task, TaskFile
 from gralph.scheduler import Scheduler, TaskState

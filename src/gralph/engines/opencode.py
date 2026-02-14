@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import IO
 
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import open_text
@@ -93,14 +94,28 @@ class OpenCodeEngine(EngineBase):
         cwd: Path | None = None,
         stdout_file: Path | None = None,
         stderr_file: Path | None = None,
-    ) -> subprocess.Popen:  # type: ignore[type-arg]
+    ) -> subprocess.Popen[str]:
         """Override to inject OPENCODE_PERMISSION env var."""
         cmd = self.build_cmd(prompt)
         env = os.environ.copy()
         env["OPENCODE_PERMISSION"] = '{"*":"allow"}'
 
-        stdout_fh = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
-        stderr_fh = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
+        stdout_fh: IO[str] | int = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
+        stderr_fh: IO[str] | int = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
+        creationflags = self._creationflags()
+
+        if creationflags:
+            return subprocess.Popen(
+                cmd,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+                env=env,
+                creationflags=creationflags,
+            )
 
         return subprocess.Popen(
             cmd,
@@ -111,7 +126,6 @@ class OpenCodeEngine(EngineBase):
             errors="replace",
             cwd=cwd,
             env=env,
-            **self._async_popen_kwargs(),
         )
 
     def parse_output(self, raw: str) -> EngineResult:

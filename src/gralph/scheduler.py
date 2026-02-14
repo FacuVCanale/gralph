@@ -61,6 +61,10 @@ class Scheduler:
     def count_failed(self) -> int:
         return sum(1 for s in self._state.values() if s == TaskState.FAILED)
 
+    def pending_task_ids(self) -> list[str]:
+        """Return pending task IDs preserving their declaration order."""
+        return [task_id for task_id, state in self._state.items() if state == TaskState.PENDING]
+
     # ── dependency / mutex checks ────────────────────────────────
 
     def deps_satisfied(self, task_id: str) -> bool:

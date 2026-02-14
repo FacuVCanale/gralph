@@ -93,6 +93,8 @@ class _ScenarioEngine(EngineBase):
                 ")\n"
             )
             cmd = [sys.executable, "-c", commit_script, task_id, self.provider, str(attempt)]
+        elif outcome == "no_commit":
+            cmd = [sys.executable, "-c", "pass"]
         else:
             raise AssertionError(f"Unknown test outcome: {outcome}")
 
@@ -194,3 +196,16 @@ def test_run_end_to_end_fallback_wraps_from_last_provider_to_first(git_repo: Pat
     assert report["providerAttempts"] == ["gemini", "claude"]
     assert report["attempt"] == 2
     assert report["retries"] == 1
+
+
+def test_run_returns_false_when_terminal_task_fails(git_repo: Path) -> None:
+    runner, _scenario, ok = _run_scenario(
+        git_repo,
+        {
+            "TASK-001": ["no_commit"],
+        },
+    )
+
+    assert ok is False
+    assert runner.sched.count_failed() == 1
+    assert runner.sched.count_done() == 0

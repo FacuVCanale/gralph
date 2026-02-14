@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from gralph.config import Config
 from gralph.engines.base import EngineBase, EngineResult
 from gralph.io_utils import open_text, read_text, write_text
-from gralph.runner import Runner, AgentSlot, _meaningful_changes
+from gralph.runner import Runner, AgentSlot
 from gralph.scheduler import Scheduler, TaskState
 from gralph.tasks.model import Task, TaskFile
 from gralph import git_ops
@@ -553,7 +551,7 @@ class TestMergeBranchWithFallback:
         engine = MockEngine()
 
         # merge_branch_with_fallback operates on cwd, so we need to be in git_repo
-        with patch("gralph.artifacts.merge_no_edit", wraps=lambda b, **kw: git_ops.merge_no_edit(b, cwd=git_repo)) as mock_merge:
+        with patch("gralph.artifacts.merge_no_edit", wraps=lambda b, **kw: git_ops.merge_no_edit(b, cwd=git_repo)):
             with patch("gralph.artifacts.merge_no_edit", side_effect=lambda b: git_ops.merge_no_edit(b, cwd=git_repo)):
                 # Simpler approach: just call with cwd-aware mocks
                 pass

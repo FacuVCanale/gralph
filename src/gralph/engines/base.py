@@ -6,8 +6,9 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from gralph.io_utils import open_text
 
@@ -117,7 +118,7 @@ class EngineBase(ABC):
 
     @staticmethod
     def _communicate_with_interrupts(
-        proc: subprocess.Popen,
+        proc: subprocess.Popen[str],
         *,
         timeout: int | None,
     ) -> tuple[str, str]:
@@ -138,7 +139,7 @@ class EngineBase(ABC):
                 continue
 
     @staticmethod
-    def _terminate_process(proc: subprocess.Popen) -> None:
+    def _terminate_process(proc: subprocess.Popen[str]) -> None:
         """Terminate a subprocess promptly (best effort)."""
         try:
             if proc.poll() is None:
@@ -170,12 +171,25 @@ class EngineBase(ABC):
         cwd: Path | None = None,
         stdout_file: Path | None = None,
         stderr_file: Path | None = None,
-    ) -> subprocess.Popen:  # type: ignore[type-arg]
+    ) -> subprocess.Popen[str]:
         """Launch the engine asynchronously, returning the Popen handle."""
         cmd = self.build_cmd(prompt)
 
-        stdout_fh = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
-        stderr_fh = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
+        stdout_fh: IO[str] | int = open_text(stdout_file, "w") if stdout_file else subprocess.PIPE
+        stderr_fh: IO[str] | int = open_text(stderr_file, "a") if stderr_file else subprocess.PIPE
+        creationflags = self._creationflags()
+
+        if creationflags:
+            return subprocess.Popen(
+                cmd,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+                creationflags=creationflags,
+            )
 
         return subprocess.Popen(
             cmd,
@@ -185,17 +199,14 @@ class EngineBase(ABC):
             encoding="utf-8",
             errors="replace",
             cwd=cwd,
-            **self._async_popen_kwargs(),
         )
 
     @staticmethod
-    def _async_popen_kwargs() -> dict[str, int]:
-        """Extra Popen kwargs for async worker processes."""
+    def _creationflags() -> int:
+        """Creation flags for async worker processes."""
         if sys.platform == "win32":
-            flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            if flag:
-                return {"creationflags": flag}
-        return {}
+            return int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        return 0
 
     @staticmethod
     def _check_errors(raw: str) -> str:

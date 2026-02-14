@@ -99,7 +99,8 @@ def skill_exists(engine: str, skill: str) -> bool:
 def _download_skill(skill: str, base_url: str) -> Path | None:
     """Download skill content to a temp file. Returns path or None."""
     url = f"{base_url.rstrip('/')}/{skill}/SKILL.md"
-    tmp = Path(tempfile.mktemp(suffix=".md"))
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as temp_file:
+        tmp = Path(temp_file.name)
 
     try:
         with urlopen(url, timeout=15) as resp:

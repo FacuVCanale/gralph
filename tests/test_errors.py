@@ -9,7 +9,7 @@ import pytest
 from gralph.engines.base import EngineBase
 from gralph.io_utils import write_text
 from gralph.runner import _extract_error_from_logs, _is_external_failure
-from gralph.scheduler import Scheduler, TaskState
+from gralph.scheduler import Scheduler
 from gralph.tasks.model import Task, TaskFile
 
 

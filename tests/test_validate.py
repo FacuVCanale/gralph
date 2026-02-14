@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from gralph.io_utils import write_text
 from gralph.tasks.model import Task, TaskFile
