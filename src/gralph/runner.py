@@ -86,9 +86,15 @@ def _build_task_prompt(
     shell_rules = _task_shell_rules()
     quality_rules: list[str] = []
     if skip_tests:
-        quality_rules.append("- Skip full test suite execution unless strictly needed for this task.")
+        quality_rules.append(
+            "- You may skip running the full test suite, but still add/update relevant automated tests when feasible."
+        )
+    else:
+        quality_rules.append("- Run relevant test commands for touched code and ensure they pass before commit.")
     if skip_lint:
-        quality_rules.append("- Skip full lint execution unless strictly needed for this task.")
+        quality_rules.append("- You may skip running the full lint suite, but keep edited code lint-clean.")
+    else:
+        quality_rules.append("- Run relevant lint/typecheck commands for touched code before commit.")
     quality_block = "\n".join(quality_rules)
     return f"""You are working on a specific task. Focus ONLY on this task:
 
@@ -98,9 +104,11 @@ EXPECTED FILES TO CREATE/MODIFY: {touches}
 
 Instructions:
 1. Implement this specific task completely by creating/editing the necessary code files.
-2. Write tests if appropriate.
-3. Update progress.txt with what you did.
-4. Commit your changes with a descriptive message.
+2. Follow repository conventions for structure (for example: source in `src/`, tests in `tests/`, docs in `docs/` when applicable).
+3. Write or update automated tests for this task. If this is documentation-only, state that explicitly in progress.txt.
+4. If behavior/config/API/CLI changed, update README.md and any relevant docs in the same task.
+5. Update progress.txt with what you did.
+6. Commit your changes with a descriptive message.
 
 {shell_rules}
 

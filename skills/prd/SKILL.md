@@ -108,13 +108,17 @@ Each story should be small enough to implement in one focused session, but detai
 **Acceptance Criteria:**
 - [ ] Specific verifiable criterion
 - [ ] Another criterion
+- [ ] Automated tests added/updated for this story
 - [ ] Typecheck/lint passes
+- [ ] **[Behavior/config/API/CLI changes]** README/docs updated
 - [ ] **[UI stories only]** Verify in browser using dev-browser skill
 ```
 
 **Important:** 
 - Acceptance criteria must be verifiable, not vague. "Works correctly" is bad. "Button shows confirmation dialog before deleting" is good.
 - Task Definition must be a single, detailed task statement. Do not include sub-tasks or step-by-step lists.
+- Automated tests are mandatory for implementation stories unless the story is documentation-only.
+- Any user-visible behavior/configuration/API/CLI change must include README update criteria.
 - **For any story with UI changes:** Always include "Verify in browser using dev-browser skill" as acceptance criteria. This ensures visual verification of frontend work.
 
 ### 4. Functional Requirements
@@ -124,39 +128,73 @@ Numbered list of specific functionalities:
 
 Be explicit and unambiguous.
 
-### 5. Non-Goals (Out of Scope)
+### 5. Repository Structure Plan (Mandatory)
+Define structure before implementation starts.
+
+Include:
+- Target directories to create/update (for example `src/`, `tests/`, `docs/`, config files at root)
+- New files/modules expected, with short purpose
+- A tree-style snippet for key paths (new or modified)
+- Any module boundaries or ownership constraints
+
+### 6. Testing Requirements (Mandatory)
+Define what must be tested and how completion is verified.
+
+Include:
+- Required automated test levels (unit/integration/e2e as applicable)
+- Test file locations and naming conventions
+- Exact commands to run for validation
+- Any mocking/fixture expectations
+- Coverage or risk-critical paths that must be exercised
+
+### 7. Documentation Requirements (Mandatory)
+List documentation updates as first-class deliverables.
+
+Include:
+- `README.md` changes required for this feature (usage, setup, examples, flags, env vars, behavior changes)
+- Any additional docs that must be created/updated (for example files under `docs/`)
+- Migration or upgrade notes if behavior is breaking or operationally sensitive
+
+### 8. Non-Goals (Out of Scope)
 What this feature will NOT include. Critical for managing scope.
 
-### 6. Design Considerations (Optional)
+### 9. Design Considerations (Optional)
 - UI/UX requirements
 - Link to mockups if available
 - Relevant existing components to reuse
 
-### 7. Technical Considerations (Optional)
+### 10. Technical Considerations (Optional)
 - Known constraints or dependencies
 - Integration points with existing systems
 - Performance requirements
 
-### 8. Success Metrics
+### 11. Success Metrics
 How will success be measured?
 - "Reduce time to complete X by 50%"
 - "Increase conversion rate by 10%"
 
-### 9. Open Questions
+### 12. Open Questions
 Remaining questions or areas needing clarification.
 
-### 10. Assumptions & Dependencies
+### 13. Assumptions & Dependencies
 List explicit assumptions and external dependencies (APIs, teams, data sources).
 
-### 11. Risks & Mitigations
+### 14. Risks & Mitigations
 Call out likely risks (performance, security, UX, data quality) and mitigations.
 
-### 12. Rollout & Monitoring (Optional)
+### 15. Rollout & Monitoring (Optional)
 - Rollout plan (feature flag, staged release, rollback)
 - Analytics/telemetry needed to measure success
 
-### 13. Privacy & Security (Optional)
+### 16. Privacy & Security (Optional)
 Data handling, PII, access controls, and compliance notes.
+
+### 17. Definition of Done (Mandatory)
+A concise checklist that must include:
+- Code implementation complete
+- Automated tests added/updated and passing
+- README/docs updates completed
+- Repository structure matches the plan
 
 ---
 
@@ -255,6 +293,41 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - FR-4: Add priority filter dropdown to task list header
 - FR-5: Sort by priority within each status column (high to medium to low)
 
+## Repository Structure Plan
+
+- Update `src/tasks/` models to include `priority`
+- Update `src/ui/components/` task card and edit modal components
+- Add/update tests under `tests/tasks/` and `tests/ui/`
+- Update docs in `README.md`
+
+```text
+src/
+  tasks/
+    models.py
+  ui/
+    components/
+      task-card.tsx
+      task-edit-modal.tsx
+tests/
+  tasks/
+    priority-model.test.py
+  ui/
+    priority-ui.test.tsx
+```
+
+## Testing Requirements
+
+- Add unit tests for priority model validation and default value behavior
+- Add UI tests for badge rendering, edit selector persistence, and filter behavior
+- Run: `pytest` and project UI test command if present
+- Implementation is incomplete until new/updated tests pass
+
+## Documentation Requirements
+
+- Update `README.md` with priority feature behavior and usage
+- Document default priority and filter options
+- Add upgrade notes if existing sorting behavior changes
+
 ## Non-Goals
 
 - No priority-based notifications or reminders
@@ -277,6 +350,13 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 
 - Should priority affect task ordering within a column?
 - Should we add keyboard shortcuts for priority changes?
+
+## Definition of Done
+
+- [ ] Feature implementation complete
+- [ ] Automated tests added/updated and passing
+- [ ] README/docs updated
+- [ ] Repository structure matches the plan
 ```
 
 ---
@@ -290,5 +370,9 @@ Before saving the PRD:
 - [ ] Incorporated user's answers
 - [ ] User stories are small and specific
 - [ ] Functional requirements are numbered and unambiguous
+- [ ] Repository Structure Plan section defines directories/files before implementation
+- [ ] Testing Requirements section makes automated tests mandatory
+- [ ] Documentation Requirements section explicitly includes README updates
 - [ ] Non-goals section defines clear boundaries
+- [ ] Definition of Done includes code + tests + docs + structure alignment
 - [ ] Saved to `tasks/prd-[feature-name].md`

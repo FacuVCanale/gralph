@@ -357,6 +357,39 @@ class TestCliDryRun:
         assert "dry run" in r.output.lower() or "Dry run" in r.output
         assert "TASK-001" in r.output or "One" in r.output
 
+    def test_metadata_agent_prompt_requires_structure_tests_and_docs(self, tmp_path: Path) -> None:
+        from gralph.cli import _run_metadata_agent
+
+        prd_path = tmp_path / "PRD.md"
+        output = tmp_path / "tasks.yaml"
+        write_text(prd_path, "# PRD: Meta Prompt\n\nprd-id: meta-prompt\n\nBody.\n")
+
+        captured: dict[str, str] = {}
+        minimal_tasks = (
+            "branchName: gralph/meta-prompt\n"
+            "tasks:\n"
+            "  - id: TASK-001\n    title: One\n    completed: false\n    dependsOn: []\n    mutex: []\n"
+        )
+
+        class _CapturePromptEngine(EngineBase):
+            def build_cmd(self, prompt: str) -> list[str]:
+                return [sys.executable, "-c", "pass"]
+
+            def parse_output(self, raw: str) -> EngineResult:
+                return EngineResult(text=raw)
+
+            def run_sync(self, prompt, **kwargs):
+                captured["prompt"] = prompt
+                write_text(output, minimal_tasks)
+                return EngineResult(text="ok")
+
+        _run_metadata_agent(_CapturePromptEngine(), prd_path, output)
+
+        prompt = captured["prompt"].lower()
+        assert "repository structure" in prompt
+        assert "automated testing tasks" in prompt
+        assert "readme.md" in prompt
+
 
 # ── Full pipeline run (no --dry-run) ─────────────────────────────────────
 # Exercises code paths after dry-run (e.g. progress.txt, Runner) so missing
@@ -619,6 +652,10 @@ class TestCliPrdSubcommand:
         assert "User's answers to clarifying questions:" in prompt
         assert "1B, keep logs" in prompt
         assert "Interpret answer codes by number+letter." in prompt
+        assert "## Repository Structure Plan" in prompt
+        assert "## Testing Requirements" in prompt
+        assert "## Documentation Requirements" in prompt
+        assert "## Definition of Done" in prompt
         assert "Save the PRD to: tasks/prd-temp.md" in prompt
 
     def test_prd_generation_phase2_prompt_uses_questions_and_answers(self, tmp_path: Path):
@@ -662,6 +699,10 @@ class TestCliPrdSubcommand:
         assert "1. How should providers be assigned?" in phase2_prompt
         assert "User's answers to clarifying questions:" in phase2_prompt
         assert "1B" in phase2_prompt
+        assert "## Repository Structure Plan" in phase2_prompt
+        assert "## Testing Requirements" in phase2_prompt
+        assert "## Documentation Requirements" in phase2_prompt
+        assert "## Definition of Done" in phase2_prompt
 
     def test_find_prd_skill_for_claude_prefers_bundled_over_user(self, tmp_path: Path):
         from gralph.cli import _find_prd_skill

@@ -483,3 +483,18 @@ def test_task_prompt_includes_windows_powershell_guardrails() -> None:
     assert "SHELL COMPATIBILITY (Windows PowerShell):" in prompt
     assert "Do NOT use '&&' between commands" in prompt
     assert "$ErrorActionPreference = 'Stop'" in prompt
+    assert "Write or update automated tests for this task." in prompt
+    assert "update README.md" in prompt
+
+
+def test_task_prompt_keeps_test_creation_required_when_skip_tests_enabled() -> None:
+    prompt = _build_task_prompt(
+        "TASK-002",
+        "Another task",
+        "src/app.py",
+        skip_tests=True,
+        skip_lint=True,
+    )
+
+    assert "Write or update automated tests for this task." in prompt
+    assert "still add/update relevant automated tests" in prompt

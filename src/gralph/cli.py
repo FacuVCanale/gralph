@@ -440,9 +440,15 @@ Feature request from the user:
 1. Incorporate the user's answers into the PRD.
 2. The PRD MUST start with `# PRD: <Title>` (you choose a short, descriptive title).
 3. On the next non-blank line after the title, add `prd-id: <id>` where <id> is a short, URL-safe identifier you choose (lowercase, hyphens only, e.g. provider-fallback-rate-limit). Keep it under 50 characters.
-4. Do NOT ask more questions — generate the full PRD now.
+4. Do NOT ask more questions - generate the full PRD now.
+MANDATORY CONTENT TO INCLUDE IN THE PRD:
+- `## Repository Structure Plan`: define target directories/files before coding starts and include a tree-style snippet for key paths.
+- `## Testing Requirements`: automated tests are mandatory for implementation work; specify required test levels and exact validation commands.
+- `## Documentation Requirements`: explicitly list README.md updates and any other docs to update.
+- Each implementation user story must include test acceptance criteria; include README/docs criteria when behavior/config/API/CLI changes.
+- `## Definition of Done`: include code + tests + docs + structure alignment.
 5. Save the PRD to: {save_path_str}
-6. Do NOT implement anything — only create the PRD file."""
+6. Do NOT implement anything - only create the PRD file."""
 
 
 def _run_prd_single(
@@ -477,9 +483,15 @@ Feature request from the user:
 IMPORTANT RULES:
 1. The PRD MUST start with `# PRD: <Title>` (you choose a short, descriptive title).
 2. On the next non-blank line after the title, add `prd-id: <id>` where <id> is a short, URL-safe identifier you choose (lowercase, hyphens only, e.g. provider-fallback-rate-limit). Keep it under 50 characters.
-3. Do NOT ask clarifying questions interactively — infer reasonable defaults and note assumptions in the Open Questions section.
+3. Do NOT ask clarifying questions interactively - infer reasonable defaults and note assumptions in the Open Questions section.
+MANDATORY CONTENT TO INCLUDE IN THE PRD:
+- `## Repository Structure Plan`: define target directories/files before coding starts and include a tree-style snippet for key paths.
+- `## Testing Requirements`: automated tests are mandatory for implementation work; specify required test levels and exact validation commands.
+- `## Documentation Requirements`: explicitly list README.md updates and any other docs to update.
+- Each implementation user story must include test acceptance criteria; include README/docs criteria when behavior/config/API/CLI changes.
+- `## Definition of Done`: include code + tests + docs + structure alignment.
 4. Save the PRD to: {save_path_str}
-5. Do NOT implement anything — only create the PRD file."""
+5. Do NOT implement anything - only create the PRD file."""
 
     glog.info(f"Generating PRD with {cfg.ai_engine}…")
     glog.info(f"Output: {write_path_abs}")
@@ -929,6 +941,10 @@ Rules:
 4. Use mutex for shared resources: db-migrations, lockfile, router, global-config
 5. Set branchName to a short kebab-case feature name prefixed with "gralph/" (based on the PRD)
 6. Keep tasks small and focused (completable in one session)
+7. Include at least one early task that establishes or validates repository structure before feature implementation tasks.
+8. Include explicit automated testing tasks (unit/integration/e2e as relevant). Tests are mandatory for implementation work.
+9. Include an explicit documentation task to update README.md (and docs/ files when applicable) for the implemented behavior.
+10. Use dependencies so structure tasks run first and docs tasks run after implementation and tests.
 
 Save the file as {output}.
 Do NOT implement anything - only create the tasks.yaml file."""

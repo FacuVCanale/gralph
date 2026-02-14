@@ -201,6 +201,12 @@ gralph prd -o PRD.md "Refactor payment flow"
 
 The subcommand inherits the engine from the parent (`--claude`, `--opencode`, `--codex`, `--cursor`, `--gemini`, or `--providers`). When using `--providers`, the first provider is used for PRD generation.
 
+Generated PRDs are expected to include:
+- `Repository Structure Plan` (define target directories/files before coding)
+- `Testing Requirements` (automated tests required for implementation work)
+- `Documentation Requirements` (explicit `README.md` and docs updates)
+- `Definition of Done` (code + tests + docs + structure alignment)
+
 ## PRD Format
 
 PRD.md must include a `prd-id` line:
